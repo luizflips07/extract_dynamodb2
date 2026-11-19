@@ -1,0 +1,10 @@
+source: local
+table_name: produtos
+
+keys: [id]
+columns:
+  - { name: id,        dynamo: S }
+  - { name: nome,      dynamo: S }
+  - { name: categoria, dynamo: S }
+  - { name: preco,     dynamo: N, type: "decimal(10,2)" }
+  - { name: ativo,     dynamo: BOOL }

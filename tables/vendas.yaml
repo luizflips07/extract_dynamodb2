@@ -1,0 +1,16 @@
+source: local
+table_name: vendas
+
+# Vendas é a tabela de maior volume: lotes menores e janela mais curta (ajuste conforme a carga)
+streaming: { batch_size: 10000, max_batching_window_seconds: 120, parallelization_factor: 2 }
+
+keys: [cliente_id, venda_id]
+columns:
+  - { name: cliente_id,  dynamo: S }
+  - { name: venda_id,    dynamo: S }
+  - { name: produto_id,  dynamo: S }
+  - { name: quantidade,  dynamo: N, type: int }
+  - { name: valor_total, dynamo: N, type: "decimal(12,2)" }
+  - { name: data,        dynamo: S, type: timestamp }
+  - { name: status,      dynamo: S }
+  - { name: pago,        dynamo: BOOL }

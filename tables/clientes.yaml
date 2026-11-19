@@ -1,0 +1,23 @@
+# Uma tabela = um arquivo em tables/. O deploy cria Lambda, ESM, SQS, alarmes e tabela Glue.
+# Pré-requisitos na tabela DynamoDB: Streams NEW_AND_OLD_IMAGES e PITR habilitado.
+source: local                 # deve existir sources/local.yaml
+table_name: clientes
+glue_table: dynamodb_clientes # opcional (padrão: dynamodb_<table_name>)
+
+# RAW particionado pela coluna uf (layout: .../uf=<valor>/dt=…/hh=…/). Ver docs/VARIAVEIS.md
+partition_by: uf
+
+# Overrides opcionais dos padrões de config.yaml
+# streaming: { batch_size: 5000, max_batching_window_seconds: 60 }
+# lambda:    { memory_mb: 1024 }
+
+# Schema lógico (usado para gerar a view tipada da camada Trusted; o RAW é schema-agnóstico)
+keys: [id]                    # atributos da chave primária (partição [+ ordenação])
+columns:
+  - { name: id,        dynamo: S }
+  - { name: nome,      dynamo: S }
+  - { name: email,     dynamo: S }
+  - { name: ativo,     dynamo: BOOL }
+  - { name: criado_em, dynamo: S, type: timestamp }
+  - { name: cidade,    dynamo: S }
+  - { name: uf,        dynamo: S }

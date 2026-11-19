@@ -1,0 +1,119 @@
+name: deploy
+
+# Executa SOMENTE quando há mudança em tables/*.yaml: arquivo novo, alterado (ou removido).
+# tables/_examples/** e qualquer outra pasta NÃO disparam o deploy.
+# workflow_dispatch: execução manual (ex.: publicar mudanças de infra/ ou src/ de propósito).
+on:
+  push:
+    branches: [main]
+    paths: ["tables/*.yaml"]
+  workflow_dispatch: {}
+
+# OIDC: sem chaves de acesso de longa duração
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      sources: ${{ steps.matrix.outputs.sources }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements-dev.txt && pytest -q
+      - id: matrix
+        name: Descobre as fontes (sources/*.yaml)
+        run: |
+          echo "sources=$(ls sources/*.yaml | xargs -n1 basename | sed 's/\.yaml$//' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  # 1) Data Lake: compara cada tables/*.yaml com a tabela Glue existente (plan) e aplica o Terraform.
+  #    Tabela igual (partition_by + keys + columns) => nada é feito.
+  #    Tabela com formato diferente => o Terraform APAGA e RECRIA a tabela Glue (dados do S3 são mantidos).
+  datalake:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: datalake-prod        # aprovação manual configurada no environment
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+      changes: ${{ steps.plan.outputs.changes }}
+      sources: ${{ steps.plan.outputs.sources }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install boto3 pyyaml
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.DATALAKE_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - id: plan
+        name: Tabelas novas / com formato alterado (antes do apply)
+        run: python scripts/table_sync.py plan --out changes.json
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.11.4" }
+      - working-directory: infra/datalake
+        run: terraform init -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" -backend-config="key=datalake/raw.tfstate" -backend-config="region=${{ vars.AWS_REGION }}" -backend-config="use_lockfile=true" -backend-config="encrypt=true"
+      - working-directory: infra/datalake
+        run: terraform apply -auto-approve
+
+  # 2) Conta produtora (uma execução por fonte): Lambdas/ESM e, só para tabelas novas/alteradas,
+  #    export PITR (carga inicial) aguardando concluir.
+  producer:
+    needs: [test, datalake]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        source: ${{ fromJson(needs.test.outputs.sources) }}
+    # um environment por fonte (producer-<fonte>) com a variável PRODUCER_DEPLOY_ROLE_ARN da conta dela
+    environment: producer-${{ matrix.source }}
+    env:
+      CHANGES: ${{ needs.datalake.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install boto3 pyyaml
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PRODUCER_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.11.4" }
+      - working-directory: infra/producer
+        run: terraform init -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" -backend-config="key=producer/${{ matrix.source }}.tfstate" -backend-config="region=${{ vars.AWS_REGION }}" -backend-config="use_lockfile=true" -backend-config="encrypt=true"
+      - working-directory: infra/producer
+        run: terraform apply -auto-approve -var="source_name=${{ matrix.source }}"
+      - name: Export (carga inicial) das tabelas novas/alteradas desta fonte
+        if: needs.datalake.outputs.has_changes == 'true'
+        run: |
+          TABLES=$(printf '%s' "$CHANGES" | jq -r --arg s "${{ matrix.source }}" '[.tables[] | select(.source == $s) | .name] | join(" ")')
+          if [ -n "$TABLES" ]; then python scripts/initial_load.py --tables $TABLES --wait; else echo "nenhuma tabela desta fonte mudou"; fi
+
+  # 3) Data Lake: snapshot -> RAW, registro das partições existentes e views Trusted, só das tabelas novas/alteradas.
+  #    Sem environment: usa a variável de repositório DATALAKE_DEPLOY_ROLE_ARN (evita pedir aprovação duas vezes).
+  load:
+    needs: [datalake, producer]
+    if: needs.datalake.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CHANGES: ${{ needs.datalake.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install boto3 pyyaml
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.DATALAKE_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: |
+          printf '%s' "$CHANGES" > changes.json
+          python scripts/table_sync.py post --changes changes.json

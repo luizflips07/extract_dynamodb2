@@ -1,0 +1,13 @@
+# Exemplo de segunda tabela com schema diferente (fora de tables/*.yaml, portanto NÃO é implantado).
+# Para ativar: copie para tables/pedidos.yaml.
+source: local
+table_name: pedidos
+streaming: { batch_size: 5000, max_batching_window_seconds: 60 }
+
+keys: [cliente_id, pedido_id]   # partição + ordenação
+columns:
+  - { name: cliente_id, dynamo: S }
+  - { name: pedido_id,  dynamo: S }
+  - { name: valor,      dynamo: N, type: "decimal(18,2)" }
+  - { name: itens,      dynamo: JSON }      # M/L/SS/NS: mantido como JSON
+  - { name: pago,       dynamo: BOOL }

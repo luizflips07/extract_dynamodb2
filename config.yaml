@@ -1,0 +1,40 @@
+# Configuração global do produtor (lida pelo Terraform via yamldecode)
+project: dynamodb-produtor
+environment: prod            # dev | hml | prod
+region: us-east-1
+
+# Conta Data Lake - RAW (destino)
+datalake:
+  account_id: "111111111111"   # TODO: conta do Data Lake (12 dígitos)
+  raw_bucket: "meu-datalake-raw-001"  # TODO: nome ÚNICO no mundo (minúsculas, números, - e .)
+  partition_start_date: "2026-11-01"   # 1º dia com dados; limita as partições projetadas (evita throttling do S3). Recue se fizer backfill.
+  raw_kms_key_arn: "arn:aws:kms:us-east-1:111111111111:key/00000000-0000-0000-0000-000000000000"  # TODO: preencher após o 1º apply do datalake (terraform output -raw raw_kms_key_arn)
+
+# Parâmetros do Event Source Mapping (ajustáveis por ambiente)
+streaming:
+  batch_size: 10000
+  max_batching_window_seconds: 300     # 60-300s => dado no RAW em ~1-5 min
+  parallelization_factor: 1            # máx. 10; respeitar limite de 2 consumidores/shard
+  max_retry_attempts: 5
+  max_record_age_seconds: 86400        # alinhado à retenção de 24 h do stream
+  bisect_batch_on_error: true
+
+lambda:
+  runtime: python3.12
+  architecture: arm64                  # Graviton: ~20% mais barato (Cost Optimization)
+  memory_mb: 512
+  timeout_seconds: 120
+  reserved_concurrency: -1             # -1 = sem reserva; defina para proteger a conta
+  log_retention_days: 90
+
+alarms:
+  iterator_age_ms: 300000              # 5 min
+  errors_threshold: 1
+  throttles_threshold: 1
+  duration_p99_ms: 100000
+  notification_emails: ["seu-email@exemplo.com"]   # TODO: e-mails dos alarmes (confirmar a assinatura SNS)
+
+tags:
+  owner: squad-dados
+  cost-center: "1234"
+  data-classification: confidential

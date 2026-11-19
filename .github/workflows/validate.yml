@@ -1,0 +1,41 @@
+name: validate
+
+on:
+  pull_request:
+    paths: ["src/**", "tests/**", "scripts/**", "infra/**", "*.yaml", "sources/**", "tables/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  lambda-and-schemas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check src tests scripts
+      - run: pytest -q                       # inclui validação do schema de todas as tabelas
+      - run: python scripts/generate_trusted_ddl.py --out "${RUNNER_TEMP}/ddl"
+
+  terraform:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        stack: [producer, datalake]
+    defaults:
+      run:
+        working-directory: infra/${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.11.4" }
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - name: Checkov (IaC security)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra/${{ matrix.stack }}
+          framework: terraform

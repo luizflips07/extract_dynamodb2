@@ -1,0 +1,16 @@
+# Exemplo: RAW particionado por uma coluna da tabela (fora de tables/*.yaml => NÃO é implantado).
+# Para ativar, copie para tables/<tabela>.yaml e faça o merge: o deploy detecta o arquivo novo.
+source: local
+table_name: clientes
+
+# --- Particionamento do RAW ----------------------------------------------------------
+# A coluna é particionada pelo VALOR ENCONTRADO em cada registro (sem lista de valores):
+#   dynamodb/<fonte>/<tabela>/uf=SP/dt=2026-11-19/hh=12/<seq>-<seq>.json.gz
+# Novas partições (novos valores) são registradas no Glue automaticamente a cada arquivo novo.
+partition_by: uf                 # deve estar em `columns`; tipo S, N ou BOOL
+
+keys: [id]
+columns:
+  - { name: id,        dynamo: S }
+  - { name: nome,      dynamo: S }
+  - { name: uf,        dynamo: S }

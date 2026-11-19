@@ -1,0 +1,4 @@
+# Fonte "local": conta produtora dona das tabelas DynamoDB
+name: local
+account_id: "222222222222"   # TODO: conta produtora (12 dígitos, onde estão as tabelas DynamoDB)
+initial_load: true           # executa export FULL (PITR) uma única vez
