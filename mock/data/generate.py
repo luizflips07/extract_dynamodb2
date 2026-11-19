@@ -82,6 +82,17 @@ def gen_estoque(produtos: int, seed: int = 42) -> Iterator[dict]:
         }
 
 
+def gen_faturamento(count: int, clientes: int = 500, seed: int = 42) -> Iterator[dict]:
+    rnd = random.Random(f"faturamento-{seed}")
+    for n in range(1, count + 1):
+        yield {
+            "fatura_id": f"F{n:06d}",
+            "cliente_id": cliente_id(rnd.randint(1, clientes)),
+            "valor": (Decimal(rnd.randint(1000, 500000)) / 100).quantize(Decimal("0.01")),
+            "data_emissao": _iso(BASE_DATE + timedelta(days=rnd.randint(0, 600), seconds=rnd.randint(0, 86399))),
+        }
+
+
 def gen_vendas(count: int, clientes: int, produtos: int, seed: int = 42) -> Iterator[dict]:
     rnd = random.Random(f"vendas-{seed}")
     # precos dos produtos, para valor_total coerente

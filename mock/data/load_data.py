@@ -1,6 +1,6 @@
 """Carrega dados fictícios nas tabelas mock (execução MANUAL).
 
-Padrão: 500 clientes, 100 produtos, 100 estoque (1 por produto), 100.000 vendas.
+Padrão: 500 clientes, 100 produtos, 100 estoque (1 por produto), 100.000 vendas, 200 faturas.
 
 Exemplos:
   python mock/data/load_data.py                       # tudo
@@ -60,10 +60,11 @@ def load(ddb, name, items, workers, dry_run):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tables", nargs="+", default=["clientes", "produtos", "estoque", "vendas"],
-                    choices=["clientes", "produtos", "estoque", "vendas"])
+    ap.add_argument("--tables", nargs="+", default=["clientes", "produtos", "estoque", "vendas", "faturamento"],
+                    choices=["clientes", "produtos", "estoque", "vendas", "faturamento"])
     ap.add_argument("--clientes", type=int, default=500)
     ap.add_argument("--produtos", type=int, default=100)
+    ap.add_argument("--faturamento", type=int, default=200)
     ap.add_argument("--vendas", type=int, default=100_000)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--region", default=None, help="padrão: região do `aws configure` (AWS_REGION/AWS_DEFAULT_REGION)")
@@ -88,8 +89,9 @@ def main() -> int:
         "produtos": lambda: gen.gen_produtos(a.produtos, a.seed),
         "estoque": lambda: gen.gen_estoque(a.produtos, a.seed),
         "vendas": lambda: gen.gen_vendas(a.vendas, a.clientes, a.produtos, a.seed),
+        "faturamento": lambda: gen.gen_faturamento(a.faturamento, a.clientes, a.seed),
     }
-    for name in ["clientes", "produtos", "estoque", "vendas"]:  # ordem de dependência
+    for name in ["clientes", "produtos", "estoque", "vendas", "faturamento"]:  # ordem de dependência
         if name in a.tables:
             load(ddb, f"{a.prefix}{name}", plan[name](), a.workers, a.dry_run)
     return 0

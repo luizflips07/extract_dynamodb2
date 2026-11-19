@@ -43,10 +43,11 @@ provider "aws" {
 locals {
   # Chaves alinhadas com tables/*.yaml (campo `keys`)
   tables = {
-    clientes = { hash_key = "id", range_key = null }
-    produtos = { hash_key = "id", range_key = null }
-    vendas   = { hash_key = "cliente_id", range_key = "venda_id" }
-    estoque  = { hash_key = "produto_id", range_key = null }
+    clientes    = { hash_key = "id", range_key = null }
+    produtos    = { hash_key = "id", range_key = null }
+    vendas      = { hash_key = "cliente_id", range_key = "venda_id" }
+    estoque     = { hash_key = "produto_id", range_key = null }
+    faturamento = { hash_key = "fatura_id", range_key = null }
   }
 }
 

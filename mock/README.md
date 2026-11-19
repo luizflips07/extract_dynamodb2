@@ -1,6 +1,6 @@
 # Mock — tabelas DynamoDB e dados fictícios (uso MANUAL)
 
-Cria 4 tabelas de exemplo e as popula, para testar o pipeline CDC quando a conta não tem tabelas.
+Cria 5 tabelas de exemplo e as popula, para testar o pipeline CDC quando a conta não tem tabelas.
 **Não faz parte do GitHub Actions** (state local, executado à mão). Não é lido pelo `infra/`.
 
 | Tabela | Chave | Itens | Observação |
@@ -9,6 +9,7 @@ Cria 4 tabelas de exemplo e as popula, para testar o pipeline CDC quando a conta
 | `produtos` | `id` | 100 | `P0001`… |
 | `estoque` | `produto_id` | 100 | 1 por produto |
 | `vendas` | `cliente_id` + `venda_id` | 100.000 | referencia clientes e produtos |
+| `faturamento` | `fatura_id` | 200 | `F000001`…; 4 colunas (`fatura_id`, `cliente_id`, `valor`, `data_emissao`) |
 
 Todas: on-demand, **Streams `NEW_AND_OLD_IMAGES`**, **PITR**, criptografia em repouso. Os atributos casam com `tables/*.yaml`
 (o teste `tests/test_mock_generate.py` garante isso).

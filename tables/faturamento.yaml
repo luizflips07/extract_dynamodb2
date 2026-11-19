@@ -1,0 +1,9 @@
+source: local
+table_name: faturamento
+
+keys: [fatura_id]
+columns:
+  - { name: fatura_id,    dynamo: S }
+  - { name: cliente_id,   dynamo: S }
+  - { name: valor,        dynamo: N, type: "decimal(18,2)" }
+  - { name: data_emissao, dynamo: S, type: timestamp }

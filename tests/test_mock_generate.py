@@ -32,6 +32,7 @@ def test_items_match_table_yaml_schema():
         "produtos": next(g.gen_produtos(1)),
         "estoque": next(g.gen_estoque(1)),
         "vendas": next(g.gen_vendas(1, 5, 5)),
+        "faturamento": next(g.gen_faturamento(1)),
     }
     for name, item in gens.items():
         t = yaml.safe_load((ROOT / "tables" / f"{name}.yaml").read_text(encoding="utf-8"))

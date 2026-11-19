@@ -1,7 +1,7 @@
 # DynamoDB → Lambda → S3 RAW (Streams + Lambda por lote) — N fontes, N tabelas
 
 CDC near real-time (~1–5 min) de tabelas DynamoDB para o Data Lake RAW em S3, com carga inicial (snapshot) e views Trusted tipadas.
-Detalhes técnicos: [docs/DOCUMENTACAO.md](docs/DOCUMENTACAO.md) · **todas as variáveis a alterar (para usar em outra conta), com explicação e local do arquivo: [docs/VARIAVEIS.md](docs/VARIAVEIS.md)** · dados de teste: [mock/README.md](mock/README.md).
+Passo a passo manual (exemplo `faturamento`): [exe_manual.MD](exe_manual.MD) · detalhes técnicos: [docs/DOCUMENTACAO.md](docs/DOCUMENTACAO.md) · **todas as variáveis a alterar (para usar em outra conta), com explicação e local do arquivo: [docs/VARIAVEIS.md](docs/VARIAVEIS.md)** · dados de teste: [mock/README.md](mock/README.md).
 
 ## Arquitetura
 
@@ -45,7 +45,7 @@ DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer 
 
 > Todos os comandos na raiz do repositório. Região usada: `us-east-1`.
 
-**0. Tabelas de origem** — se ainda não existem, use o mock (cria `clientes`, `produtos`, `estoque`, `vendas` com Streams `NEW_AND_OLD_IMAGES` + PITR e carrega 500/100/100/100.000 itens):
+**0. Tabelas de origem** — se ainda não existem, use o mock (cria `clientes`, `produtos`, `estoque`, `vendas`, `faturamento` com Streams `NEW_AND_OLD_IMAGES` + PITR e carrega 500/100/100/100.000/200 itens):
 ```bash
 cd mock/terraform && terraform init && terraform apply && cd ../..
 python mock/data/load_data.py
