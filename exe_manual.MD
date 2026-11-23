@@ -102,3 +102,32 @@ SELECT fatura_id, valor FROM trusted.local_faturamento WHERE fatura_id IN ('F-E2
 cd mock/terraform && terraform destroy -target='aws_dynamodb_table.this["faturamento"]'   # remove só a tabela de origem
 ```
 Para remover a captura: apague `tables/faturamento.yaml` e rode os passos 3 e 5 (`terraform apply`). Os dados do S3 não são apagados.
+
+## 10. Alternativa ao passo 2: criar e carregar o mock por uma Lambda
+A pasta `mock_lambda/` faz, dentro de uma Lambda, o mesmo que o passo 2 (criar as tabelas do mock e carregar os dados). É manual e local, e também fora do GitHub Actions. Detalhes em [mock_lambda/README.md](mock_lambda/README.md).
+
+**Como funciona**
+- `mock_lambda/terraform` implanta a Lambda `mock-dynamodb-loader` (Python 3.12, arm64, timeout 15 min), a role e o log group. O zip é montado pelo Terraform com `mock_lambda/src/handler.py` + `mock/data/generate.py`.
+- `mock_lambda/invoke.py` roda na sua máquina e invoca a Lambda, passando ação, tabelas e volumes.
+- A Lambda cria cada tabela se ela não existir (on-demand, Streams `NEW_AND_OLD_IMAGES`, PITR) e grava os itens em lotes paralelos. Rodar de novo é seguro: tabela existente retorna `exists` e as chaves dos itens são determinísticas.
+- Ela para antes do timeout e devolve `truncated: true`. Nesse caso invoque de novo com `--action load_data`.
+- Ações: `create_tables`, `load_data`, `all` (padrão) e `delete_tables` (exige `--confirm`).
+
+**Passo a passo**
+```bash
+cd mock_lambda/terraform
+terraform init
+terraform apply                       # opcional: -var="table_name_prefix=<prefixo>" restringe a role a esse prefixo
+cd ../..
+python mock_lambda/invoke.py                                                  # cria as 5 tabelas e carrega 500/100/100/100.000/200
+python mock_lambda/invoke.py --action load_data --tables faturamento --faturamento 500
+```
+Depois siga do passo 3 (Data Lake) deste documento.
+
+**Limpeza**
+```bash
+python mock_lambda/invoke.py --action delete_tables --confirm      # apaga as tabelas do mock
+cd mock_lambda/terraform && terraform destroy                      # remove a Lambda
+```
+
+**Testado na AWS:** com `--prefix lt_` e volumes pequenos, criou as 5 tabelas com Streams e PITR, carregou os itens (50/10/10/500/30), devolveu `exists` na repetição, recusou `delete_tables` sem `--confirm`, apagou com `--confirm`, e o `terraform destroy` removeu os 4 recursos. A carga completa de 100.000 vendas dentro dos 15 min não foi medida.

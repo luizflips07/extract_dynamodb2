@@ -1,7 +1,7 @@
 # DynamoDB → Lambda → S3 RAW (Streams + Lambda por lote) — N fontes, N tabelas
 
 CDC near real-time (~1–5 min) de tabelas DynamoDB para o Data Lake RAW em S3, com carga inicial (snapshot) e views Trusted tipadas.
-Passo a passo manual (exemplo `faturamento`): [exe_manual.MD](exe_manual.MD) · detalhes técnicos: [docs/DOCUMENTACAO.md](docs/DOCUMENTACAO.md) · **todas as variáveis a alterar (para usar em outra conta), com explicação e local do arquivo: [docs/VARIAVEIS.md](docs/VARIAVEIS.md)** · dados de teste: [mock/README.md](mock/README.md).
+Passo a passo manual (exemplo `faturamento`): [exe_manual.MD](exe_manual.MD) · mock via Lambda: [mock_lambda/README.md](mock_lambda/README.md) · detalhes técnicos: [docs/DOCUMENTACAO.md](docs/DOCUMENTACAO.md) · **todas as variáveis a alterar (para usar em outra conta), com explicação e local do arquivo: [docs/VARIAVEIS.md](docs/VARIAVEIS.md)** · dados de teste: [mock/README.md](mock/README.md).
 
 ## Arquitetura
 
