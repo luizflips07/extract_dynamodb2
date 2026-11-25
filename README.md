@@ -7,7 +7,7 @@ Passo a passo manual (exemplo `faturamento`): [exe_manual.MD](exe_manual.MD) · 
 
 ```
                          ┌────────────────────────── por tabela (tables/*.yaml) ──────────────────────────┐
-DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer ──► S3 RAW  dynamodb/<fonte>/<tabela>/dt=…/hh=…/*.json.gz
+DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer (única) ──► S3 RAW  dynamodb/<fonte>/<tabela>/dt=…/hh=…/*.json.gz
 (NEW_AND_OLD_IMAGES,      (batch 10.000 / 300 s,    (NDJSON.gz,       (SSE-KMS, versionado)         │
  24 h, ordem por chave)    bisect, retries)          idempotente)            ▲                       ▼
         │                        │ retries esgotados         │ métricas/logs │ snapshot        Glue  raw.dynamodb_<tabela>
@@ -19,7 +19,7 @@ DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer 
 
 - **RAW** é schema-agnóstico: envelope CDC (`eventName`, `Keys`, `NewImage`, `OldImage`, `SequenceNumber`, …) com atributos em DynamoDB JSON.
 - **Trusted** é uma view por tabela gerada do schema declarado em `tables/<tabela>.yaml` (tipos convertidos, último evento por chave, `REMOVE` descartado).
-- Isolamento por tabela (Lambda, role, ESM, SQS, alarmes, prefixo S3, tabela Glue) e por fonte (conta, state, CMK, SNS).
+- Isolamento por tabela (ESM, SQS, alarmes, prefixo S3, tabela Glue) e por fonte (conta, state, CMK, SNS, **Lambda única** e role).
 
 ## Estrutura
 
@@ -28,9 +28,9 @@ DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer 
 | `config.yaml` | Região, Data Lake (conta, bucket, CMK, `partition_start_date`), padrões de ESM/Lambda/alarmes, tags |
 | `sources/<fonte>.yaml` | Conta produtora (`account_id`, `initial_load`) |
 | `tables/<tabela>.yaml` | Tabela capturada: `source`, `table_name`, `keys`, `columns` (+ overrides). Exemplo extra em `tables/_examples/` |
-| `src/lambda/handler.py` | Lambda writer |
+| `src/lambda/handler.py` | Lambda writer **genérica** (uma por fonte, atende todas as tabelas; a config por tabela vem de `tables.json`) |
 | `infra/datalake` | Conta Data Lake: bucket RAW, CMK, bucket policy, Glue |
-| `infra/producer` | Conta produtora (um state por fonte): CMK, SNS, dashboard e `modules/table_ingest` por tabela |
+| `infra/producer` | Conta produtora (um state por fonte): CMK, SNS, dashboard, **Lambda única** com role e, por tabela, ESM, fila e alarmes |
 | `scripts/` | `initial_load.py`, `load_initial_to_raw.py`, `generate_trusted_ddl.py`, `apply_trusted_views.py` |
 | `mock/` | Tabelas e dados fictícios para teste (execução manual, fora do CI) |
 | `.github/workflows/` | `validate.yml` (PR) e `deploy.yml` (main, OIDC) |

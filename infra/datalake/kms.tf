@@ -1,5 +1,5 @@
 # CMK do RAW. Uma statement por FONTE (escala com N tabelas): libera as roles
-# <project>-<source>-*-writer daquela conta e, opcionalmente, roles de operação (export inicial).
+# <project>-<source>-writer daquela conta e, opcionalmente, roles de operação (export inicial).
 data "aws_iam_policy_document" "kms" {
   statement {
     sid       = "AdminAccount"
@@ -25,7 +25,7 @@ data "aws_iam_policy_document" "kms" {
         test     = "ArnLike"
         variable = "aws:PrincipalArn"
         values = concat(
-          ["arn:aws:iam::${statement.value.account_id}:role/${local.cfg.project}-${statement.key}-*-writer"],
+          ["arn:aws:iam::${statement.value.account_id}:role/${local.cfg.project}-${statement.key}-writer"],
           try(statement.value.initial_load_role_arns, [])
         )
       }

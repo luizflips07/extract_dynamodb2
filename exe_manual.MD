@@ -65,7 +65,7 @@ terraform init -backend-config="bucket=<BUCKET_STATE>" -backend-config="key=prod
 terraform apply -var="source_name=local"
 cd ../..
 ```
-Cria, para a tabela: role, Lambda, ESM (lê o stream a partir de `TRIM_HORIZON`), fila SQS de falhas e 5 alarmes (12 recursos).
+Cria a **Lambda única** da fonte (`dynamodb-produtor-local-writer`, com role e log group; ela recebe a configuração de todas as tabelas em `tables.json`) e, para cada tabela, o ESM (lê o stream a partir de `TRIM_HORIZON`), a fila SQS de falhas e 3 alarmes. Tabela nova = só ESM, fila e alarmes, mais a atualização do `tables.json` da mesma Lambda. Os outputs mostram função, role e, por tabela, ESM, fila, prefixo RAW e alarmes (`terraform output tables`).
 
 ## 6. View Trusted
 ```bash
@@ -91,7 +91,7 @@ SELECT fatura_id, valor FROM trusted.local_faturamento WHERE fatura_id IN ('F-E2
 ## 8. Verificações e problemas comuns
 | Sintoma | O que verificar |
 |---|---|
-| Athena vazio logo após o passo 7 | Aguarde a janela de 5 min; confira `aws lambda list-event-source-mappings --function-name dynodb-produtor-local-faturamento-writer` (State `Enabled`). |
+| Athena vazio logo após o passo 7 | Aguarde a janela de 5 min; confira `aws lambda list-event-source-mappings --function-name dynamodb-produtor-local-writer` (State `Enabled`). |
 | Export falha por PITR | Habilite PITR na tabela (o mock já habilita) e repita o passo 4. |
 | `AccessDenied` no KMS/S3 | Rode o passo 3 depois de criar a tabela no YAML (a bucket policy/CMK é por tabela) e confira `raw_kms_key_arn`. |
 | `HIVE_S3_THROTTLING` | Filtre por `dt` e/ou ajuste `datalake.partition_start_date`. |

@@ -42,7 +42,7 @@ locals {
         join(",", [for c in t.columns : "${c.name}:${lookup({ "false" = "N", "true" = "Y" }, tostring(c.dynamo), tostring(c.dynamo))}:${try(c.type, "")}"]),
       ]))
       prefix   = "dynamodb/${t.source}/${t.table_name}"
-      role_arn = "arn:aws:iam::${local.sources[t.source].account_id}:role/${local.cfg.project}-${t.source}-${t.table_name}-writer"
+      role_arn = "arn:aws:iam::${local.sources[t.source].account_id}:role/${local.cfg.project}-${t.source}-writer"
     }
   }
 

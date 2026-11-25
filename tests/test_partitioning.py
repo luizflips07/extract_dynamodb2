@@ -6,18 +6,18 @@ from unittest import mock
 
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ["RAW_BUCKET"] = "bucket-raw"
-os.environ["RAW_PREFIX"] = "dynamodb/local/clientes"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "lambda"))
 
 import handler  # noqa: E402
 import partitioning as p  # noqa: E402
 
 
-def _rec(seq, uf, name="INSERT", ts=1_700_000_000, old=False):
+def _rec(seq, uf, name="INSERT", ts=1_700_000_000, old=False, table="clientes_part"):
     img = {"id": {"S": seq}, "uf": {"S": uf}} if uf is not None else {"id": {"S": seq}}
     d = {"Keys": {"id": {"S": seq}}, "SequenceNumber": seq, "ApproximateCreationDateTime": ts, "SizeBytes": 1}
     d["OldImage" if old else "NewImage"] = img
-    return {"eventID": seq, "eventName": name, "dynamodb": d}
+    arn = f"arn:aws:dynamodb:us-east-1:111111111111:table/{table}/stream/2026-01-01T00:00:00.000"
+    return {"eventID": seq, "eventName": name, "eventSourceARN": arn, "dynamodb": d}
 
 
 def test_normalize_and_values():
@@ -34,7 +34,7 @@ def test_remove_uses_old_image():
 
 def test_handler_writes_one_object_per_partition_value():
     recs = [_rec("1", "SP"), _rec("2", "RJ"), _rec("3", "SP"), _rec("4", "RJ", "REMOVE", old=True), _rec("5", None)]
-    with mock.patch.object(handler, "PARTITION_BY", "uf"), mock.patch.object(handler, "_s3") as s3:
+    with mock.patch.object(handler, "_s3") as s3:
         out = handler.handler({"Records": recs}, None)
     assert out == {"batchItemFailures": []}
     calls = {c.kwargs["Key"]: c.kwargs["Body"] for c in s3.put_object.call_args_list}
@@ -49,8 +49,8 @@ def test_handler_writes_one_object_per_partition_value():
 
 
 def test_without_partition_by_single_object_same_as_before():
-    recs = [_rec("1", "SP"), _rec("2", "RJ")]
-    with mock.patch.object(handler, "PARTITION_BY", ""), mock.patch.object(handler, "_s3") as s3:
+    recs = [_rec("1", "SP", table="clientes"), _rec("2", "RJ", table="clientes")]
+    with mock.patch.object(handler, "_s3") as s3:
         handler.handler({"Records": recs}, None)
     assert s3.put_object.call_count == 1
     assert "/uf=" not in s3.put_object.call_args.kwargs["Key"]

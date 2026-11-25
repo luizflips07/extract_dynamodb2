@@ -8,7 +8,7 @@ CDC near real-time (~1–5 min) de tabelas DynamoDB de uma ou mais **contas prod
 
 ### Fluxo
 1. A tabela emite um evento por item alterado (`INSERT`/`MODIFY`/`REMOVE`) com `NEW_AND_OLD_IMAGES`.
-2. O ESM (um por tabela) agrupa eventos por shard (até 10.000 ou 300 s) e invoca a Lambda da tabela.
+2. O ESM (um por tabela) agrupa eventos por shard (até 10.000 ou 300 s) e invoca a Lambda writer genérica da fonte.
 3. A Lambda grava o lote como um único NDJSON.gz no prefixo da tabela, com SSE-KMS.
 4. Falhas: retries + bisect; esgotados, metadados vão à SQS on-failure da tabela.
 5. CloudWatch → SNS (on-call). Glue Data Catalog expõe cada tabela RAW (partition projection).
@@ -19,10 +19,11 @@ CDC near real-time (~1–5 min) de tabelas DynamoDB de uma ou mais **contas prod
 | Nível | Isolamento |
 |---|---|
 | **Fonte** (conta produtora) | State Terraform próprio (`producer/<fonte>.tfstate`), provider travado na conta (`allowed_account_ids`), CMK e SNS próprios, environment de deploy próprio |
-| **Tabela** | Lambda, role IAM, ESM, SQS on-failure, log group, 5 alarmes, prefixo S3 `dynamodb/<fonte>/<tabela>/`, tabela Glue `raw.dynamodb_<tabela>`, view `trusted.<fonte>_<tabela>` |
+| **Tabela** | ESM (com seus parâmetros de lote/retry), SQS on-failure, 3 alarmes, prefixo S3 `dynamodb/<fonte>/<tabela>/`, tabela Glue `raw.dynamodb_<tabela>`, view `trusted.<fonte>_<tabela>` |
+| **Lambda da fonte** | **Uma Lambda writer genérica**, uma role, um log group e 4 alarmes de função, atendendo todas as tabelas da fonte |
 | **Data Lake** (conta destino) | Um bucket RAW + CMK; uma statement de bucket policy **por tabela** (a role só escreve no próprio prefixo); uma statement de KMS **por fonte** |
 
-Falha ou atraso em uma tabela não afeta as outras (Lambdas, filas e alarmes independentes). Nome de recursos: `<projeto>-<fonte>-<tabela>[-sufixo]`; a role `<projeto>-<fonte>-<tabela>-writer` é o contrato entre as duas stacks.
+Cada tabela tem ESM, fila e alarmes próprios (falha de lote ou atraso numa tabela não bloqueia o stream das outras), mas **a Lambda é única por fonte**: memória, timeout e concorrência são compartilhados. Nome de recursos: `<projeto>-<fonte>-<tabela>[-sufixo]`; a role `<projeto>-<fonte>-writer` (e a Lambda de mesmo nome) é o contrato entre as duas stacks.
 
 ## 3. Schemas diferentes
 
@@ -39,9 +40,9 @@ Falha ou atraso em uma tabela não afeta as outras (Lambdas, filas e alarmes ind
 | `config.yaml` | Global: projeto, ambiente, região, Data Lake (conta, bucket, CMK), padrões de ESM/Lambda/alarmes, tags |
 | `sources/<fonte>.yaml` | `name`, `account_id`, `initial_load`, opcional `initial_load_role_arns` |
 | `tables/<tabela>.yaml` | `source`, `table_name`, `glue_table`, overrides opcionais (`streaming`, `lambda`, `alarms`), `keys`, `columns` |
-| `src/lambda/handler.py` | Lambda writer (única para todas as tabelas; parametrizada por variáveis de ambiente) |
+| `src/lambda/handler.py` | Lambda writer **genérica** (única por fonte; descobre a tabela pelo `eventSourceARN` e lê a config em `tables.json`, gerado pelo Terraform) |
 | `infra/producer/` | Stack por fonte: CMK, SNS, dashboard e `module "table"` (for_each) |
-| `infra/producer/modules/table_ingest/` | Role, Lambda, ESM, SQS, logs e alarmes de **uma** tabela |
+| `infra/producer/main.tf` | Lambda única, role, SNS, CMK e, por tabela: ESM, SQS on-failure e alarmes |
 | `infra/datalake/` | `main.tf` (leitura dos YAMLs), `kms.tf`, `s3.tf` (bucket, policy), `glue.tf` |
 | `scripts/initial_load.py` | Export FULL PITR (`--table` ou `--all [--source]`) |
 | `scripts/generate_trusted_ddl.py` | Gera as views Trusted dos schemas |
@@ -53,18 +54,20 @@ Falha ou atraso em uma tabela não afeta as outras (Lambdas, filas e alarmes ind
 - Escrita com `aws:kms` (CMK do Data Lake), Bucket Key, checksum SHA256, `bucket-owner-full-control`.
 - Erro no `PutObject` → `batchItemFailures` com o primeiro `SequenceNumber`.
 - Logs JSON e métricas EMF (`DynamoRawIngest`: `RecordsWritten`, `BytesWritten`, `BatchFailed`, dimensão `Table`).
-- Variáveis: `RAW_BUCKET`, `RAW_PREFIX`, `RAW_KMS_KEY_ARN`, `SOURCE_NAME`, `TABLE_NAME`, `LOG_LEVEL`.
+- **Genérica:** uma função atende N tabelas. O ESM de cada tabela entrega registros com `eventSourceARN`; a Lambda extrai o nome da tabela e busca `{raw_prefix, partition_by}` em `tables.json` (empacotado no zip pelo Terraform a partir de `tables/*.yaml` da fonte; `TABLES_CONFIG` na env sobrescreve, para testes). Tabela fora da config: lote reportado como falha (vai para a SQS), sem gravar.
+- Variáveis de ambiente (comuns): `RAW_BUCKET`, `RAW_KMS_KEY_ARN`, `SOURCE_NAME`, `LOG_LEVEL`.
+- Métricas EMF por tabela (`DynamoRawIngest`, dimensão `Table`): `RecordsWritten`, `BytesWritten`, `BatchFailed` e `StreamLagMs` (atraso evento→RAW; a `IteratorAge` da AWS é só por função).
 
 ## 6. Infraestrutura
 
 ### 6.1 Stack `producer` (um state por fonte; `-var source_name=<fonte>`)
-Lê `sources/<fonte>.yaml` e todas as `tables/*.yaml` com `source == <fonte>`. Cria CMK com rotação, tópico SNS (e-mails de `config.yaml`), dashboard consolidado (IteratorAge, erros, registros por tabela) e uma instância do módulo por tabela.
+Lê `sources/<fonte>.yaml` e todas as `tables/*.yaml` com `source == <fonte>`. Cria CMK com rotação, tópico SNS (e-mails de `config.yaml`), dashboard consolidado, **uma Lambda genérica com role e log group** e, por tabela, um ESM e uma fila on-failure.
 
-Módulo `table_ingest`: role de menor privilégio (stream da tabela, `PutObject` só no prefixo dela, as duas CMKs, SQS, logs, X-Ray); Lambda (X-Ray, log group com KMS e retenção); ESM (`TRIM_HORIZON`, `ReportBatchItemFailures`, bisect, retries, idade máx. 24 h, destino de falha SQS); SQS criptografada (14 d, TLS obrigatório); alarmes `iterator-age`, `errors`, `throttles`, `duration-p99` e fila não vazia. *Precondition* exige Streams `NEW_AND_OLD_IMAGES` na tabela.
+Role única de menor privilégio: leitura dos streams **das tabelas da fonte**, `PutObject` só nos prefixos delas, as duas CMKs, as filas on-failure, logs e X-Ray. Lambda com X-Ray, log group com KMS e retenção; preconditions: Streams `NEW_AND_OLD_IMAGES` em todas as tabelas e nenhum `lambda:` por tabela. ESM por tabela (`TRIM_HORIZON`, `ReportBatchItemFailures`, bisect, retries, idade máx. 24 h, destino de falha SQS). Alarmes: da função (`iterator-age`, `errors`, `throttles`, `duration-p99`) e por tabela (`stream-lag`, `batch-failed`, `on-failure-not-empty`).
 Parâmetros por tabela: `merge(config.yaml, override do YAML da tabela)`.
 
 ### 6.2 Stack `datalake` (um state para todo o lake)
-Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte liberando `role/<projeto>-<fonte>-*-writer` e, opcional, `initial_load_role_arns`); bucket RAW (Block Public Access, versionamento, `BucketOwnerEnforced`, SSE-KMS, access logs, lifecycle IA → Glacier IR); bucket policy (TLS obrigatório, nega chave KMS diferente, **uma statement por tabela** restringindo a role ao prefixo, export inicial por fonte em `<tabela>-initial/`); bancos Glue `raw` e `trusted`; **uma tabela Glue por tabela** com partition projection (`dt`, `hh`).
+Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte liberando `role/<projeto>-<fonte>-writer` e, opcional, `initial_load_role_arns`); bucket RAW (Block Public Access, versionamento, `BucketOwnerEnforced`, SSE-KMS, access logs, lifecycle IA → Glacier IR); bucket policy (TLS obrigatório, nega chave KMS diferente, **uma statement por tabela** restringindo a role ao prefixo, export inicial por fonte em `<tabela>-initial/`); bancos Glue `raw` e `trusted`; **uma tabela Glue por tabela** com partition projection (`dt`, `hh`).
 
 ## 7. CI/CD
 - **validate.yml (PR):** ruff, pytest (inclui validação de schema de todas as tabelas), geração de DDL, `terraform fmt/validate` e checkov nas duas stacks.
@@ -95,7 +98,7 @@ Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte lib
 - Ordem garantida por chave dentro do shard; não há ordem global entre shards/tabelas.
 - **Escala:** bucket policy ≤ 20 KB (~40–50 tabelas por statement individual). Acima disso, trocar as statements por tabela por uma por fonte com `ArnLike` no padrão do nome da role (perde-se a restrição por prefixo na policy; mantida só pela IAM da role). Limites de contas Lambda/ESM e de recursos CloudWatch por conta também se aplicam.
 - Muitos arquivos pequenos em tabelas de baixo volume: compactação (Glue/CTAS) opcional.
-- Tabelas muito pequenas poderiam compartilhar uma Lambda; optou-se por isolar por tabela.
+- **Lambda única por fonte** (decisão): menos recursos e um ponto de deploy; em troca, memória/timeout/concorrência reservada são comuns, a role enxerga todas as tabelas da fonte e `Errors`/`Duration`/`Throttles` da AWS são agregados (atraso e falhas por tabela vêm das métricas EMF).
 
 ## 11. Well-Architected
 | Pilar | Práticas |
@@ -125,7 +128,7 @@ Notas de implementação descobertas no teste ponta a ponta:
 
 ## 14. Particionamento opcional do RAW (`partition_by`)
 - Declarado em `tables/<tabela>.yaml` (`partition_by`). Parametros e regras: `docs/VARIAVEIS.md` (seção 3).
-- **Lambda:** `PARTITION_BY` (variável de ambiente, só definida quando a tabela declara a coluna) faz o lote ser dividido por valor; um objeto por valor em `<prefixo>/<coluna>=<valor>/dt=…/hh=…/<seq>-<seq>.json.gz`. A lógica de valor/normalização está em `src/lambda/partitioning.py`, **compartilhada** com `scripts/load_initial_to_raw.py` para que o snapshot use o mesmo caminho.
+- **Lambda:** `partition_by` (campo da tabela em `tables.json`, só preenchido quando a tabela declara a coluna) faz o lote ser dividido por valor; um objeto por valor em `<prefixo>/<coluna>=<valor>/dt=…/hh=…/<seq>-<seq>.json.gz`. A lógica de valor/normalização está em `src/lambda/partitioning.py`, **compartilhada** com `scripts/load_initial_to_raw.py` para que o snapshot use o mesmo caminho.
 - **Glue (`infra/datalake/glue.tf`):** a coluna vira a 1ª partição (`[<coluna>, dt, hh]`) e a tabela deixa de usar *partition projection*: as partições são registradas dinamicamente por valor encontrado (Lambda `<project>-partition-registrar`, `infra/datalake/partition_registrar.tf`, acionada por S3 → EventBridge a cada arquivo novo; `src/registrar/handler.py`). *Preconditions* validam que a coluna existe em `columns`, que não usa nome reservado e que `keys` estão em `columns`.
 - **Trusted:** a view é criada normalmente para tabelas particionadas.
 - Sem `partition_by`, nada muda (mesmo layout, mesma tabela Glue).
@@ -136,5 +139,5 @@ Notas de implementação descobertas no teste ponta a ponta:
 - **Job `datalake`:** `table_sync.py plan` compara cada YAML com a tabela Glue → `new` / `changed` / `unchanged`; depois `terraform apply`. **Igual → nada é feito.** **Diferente → a tabela Glue é apagada e recriada** (`terraform_data` + `replace_triggered_by`). Os arquivos do S3 **não são apagados**.
 - **Job `producer`** (por fonte): `terraform apply` e, só para tabelas `new`/`changed` da fonte, `initial_load.py --wait` (export PITR).
 - **Job `load`:** só para `new`/`changed`: `load_initial_to_raw.py` (snapshot), `MSCK REPAIR TABLE` (se `partition_by`) e recriação da view Trusted.
-- **Remover um `tables/<t>.yaml`** faz o Terraform destruir Lambda, ESM, fila, alarmes e tabela Glue dessa tabela (dados no S3 permanecem).
+- **Remover um `tables/<t>.yaml`** faz o Terraform destruir ESM, fila, alarmes e tabela Glue dessa tabela (a Lambda única é atualizada sem ela) (dados no S3 permanecem).
 - **Snapshots repetidos:** como cada recriação gera um novo export, a Trusted desempata `SNAPSHOT`s pela data do export (`approximatecreationdatetime`); eventos reais do CDC sempre prevalecem (sequência > 0).

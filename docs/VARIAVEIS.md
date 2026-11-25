@@ -30,7 +30,7 @@ Lido pelo Terraform das duas stacks (`yamldecode`) e pelos scripts em `scripts/`
 | `streaming.max_record_age_seconds` | Opcional | Idade máxima de um registro do stream (retenção do stream é 24 h = 86400). | `86400` |
 | `streaming.bisect_batch_on_error` | Opcional | Divide o lote ao falhar para isolar o registro ruim. | `true` |
 | `lambda.runtime` / `lambda.architecture` | Opcional | Runtime e arquitetura (`arm64` é mais barato). | `python3.12` / `arm64` |
-| `lambda.memory_mb` / `lambda.timeout_seconds` | Opcional | Memória e timeout da Lambda writer. | `512` / `120` |
+| `lambda.memory_mb` / `lambda.timeout_seconds` | Opcional | Memória e timeout da Lambda writer **única da fonte** (valem para todas as tabelas). | `512` / `120` |
 | `lambda.reserved_concurrency` | Opcional | Concorrência reservada (`-1` = sem reserva). Use para proteger a conta. | `-1` |
 | `lambda.log_retention_days` | Opcional | Retenção dos logs da Lambda. | `90` |
 | `alarms.iterator_age_ms` | Ajustar | Limite do alarme de atraso de leitura do stream (ms). Crítico: perto de 24 h = perda de dados. | `300000` (5 min) |
@@ -39,7 +39,7 @@ Lido pelo Terraform das duas stacks (`yamldecode`) e pelos scripts em `scripts/`
 | `alarms.notification_emails` | **Obrigatório** | Lista de e-mails inscritos no SNS de alarmes. Cada pessoa precisa **confirmar a assinatura** no e-mail recebido. | `["seu-email@exemplo.com"]` (placeholder) |
 | `tags.owner` / `tags.cost-center` / `tags.data-classification` | Ajustar | Tags de governança/custo em todos os recursos. | `squad-dados` / `1234` / `confidential` |
 
-Todos os blocos `streaming`, `lambda` e `alarms` podem ser **sobrescritos por tabela** em `tables/<tabela>.yaml`.
+Os blocos `streaming` e `alarms` podem ser **sobrescritos por tabela** em `tables/<tabela>.yaml`. O bloco `lambda` **não**: a Lambda é única por fonte e o Terraform recusa `lambda:` em tabela.
 
 ## 2. `sources/<fonte>.yaml` — uma conta produtora por arquivo
 
@@ -66,7 +66,7 @@ Cada arquivo em `tables/*.yaml` vira Lambda, role, ESM, fila, alarmes, prefixo S
 | `keys` | **Obrigatório** | Atributos da chave primária (partição [+ ordenação]). Usado na deduplicação da Trusted e no snapshot. Devem estar em `columns`. |
 | `columns` | **Obrigatório** | Schema lógico: `name`, `dynamo` (`S`/`N`/`BOOL`/`JSON`) e `type` opcional (`timestamp`, `decimal(18,2)`, `int`, …). Gera a view Trusted. |
 | **`partition_by`** | Opcional | **Coluna pela qual o RAW é particionado** (ver abaixo). Deve estar em `columns`, ser `S`, `N` ou `BOOL` e não pode ser `dt`/`hh` nem nome do envelope. |
-| `streaming` / `lambda` / `alarms` | Opcional | Sobrescrevem os padrões do `config.yaml` só para esta tabela (ex.: `streaming: { batch_size: 5000 }`). |
+| `streaming` / `alarms` | Opcional | Sobrescrevem os padrões do `config.yaml` só para esta tabela (ex.: `streaming: { batch_size: 5000 }`). `lambda:` por tabela não é aceito (Lambda única por fonte). |
 
 ### Particionamento do RAW por coluna (`partition_by`)
 
@@ -124,9 +124,9 @@ Não é usado em produção; só se for recriar os dados de exemplo na nova cont
 | Valor | Arquivo | O que controla |
 |---|---|---|
 | Transições S3 (30 d → `STANDARD_IA`, 180 d → `GLACIER_IR`), expiração de versões antigas (30 d), limpeza de multipart (7 d), logs de acesso (365 d) | `infra/datalake/s3.tf` | Ciclo de vida/custo do bucket RAW e do bucket de logs. |
-| Retenção da fila on-failure (14 dias), visibilidade (300 s) | `infra/producer/modules/table_ingest/main.tf` | Quanto tempo os lotes com falha ficam disponíveis para reprocesso. |
-| Janela das alarmes (300 s, 1 período) | `infra/producer/modules/table_ingest/main.tf` | Sensibilidade dos alarmes CloudWatch. |
-| `starting_position = "TRIM_HORIZON"` | `infra/producer/modules/table_ingest/main.tf` | Onde o ESM começa a ler ao ser criado (início do stream, até 24 h). |
+| Retenção da fila on-failure (14 dias), visibilidade (300 s) | `infra/producer/main.tf` | Quanto tempo os lotes com falha ficam disponíveis para reprocesso. |
+| Janela das alarmes (300 s, 1 período) | `infra/producer/main.tf` | Sensibilidade dos alarmes CloudWatch. |
+| `starting_position = "TRIM_HORIZON"` | `infra/producer/main.tf` | Onde o ESM começa a ler ao ser criado (início do stream, até 24 h). |
 | Faixa de `hh` 0–23 e fuso UTC | `infra/datalake/glue.tf`, `src/lambda/handler.py` | Partições horárias em UTC. |
 | Versões dos providers (`aws ~> 5.60`, `archive ~> 2.4`) | `infra/*/main.tf` | Compatibilidade do Terraform. |
 
