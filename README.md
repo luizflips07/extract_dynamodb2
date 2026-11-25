@@ -12,14 +12,15 @@ DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer 
  24 h, ordem por chave)    bisect, retries)          idempotente)            ▲                       ▼
         │                        │ retries esgotados         │ métricas/logs │ snapshot        Glue  raw.dynamodb_<tabela>
         │ export PITR            ▼                           ▼               │                       │
-        └──► <tabela>-initial/  SQS on-failure      CloudWatch ► SNS (alarmes)                       ▼
+        └──► <tabela>-initial/  SQS on-failure (1)  CloudWatch ► SNS (alarmes)                       ▼
              (carga inicial) ──► load_initial_to_raw.py ──────┘                     Athena view  trusted.<fonte>_<tabela>
                                                                                     (tipada, deduplicada por chave)
 ```
 
 - **RAW** é schema-agnóstico: envelope CDC (`eventName`, `Keys`, `NewImage`, `OldImage`, `SequenceNumber`, …) com atributos em DynamoDB JSON.
 - **Trusted** é uma view por tabela gerada do schema declarado em `tables/<tabela>.yaml` (tipos convertidos, último evento por chave, `REMOVE` descartado).
-- Isolamento por tabela (ESM, SQS, alarmes, prefixo S3, tabela Glue) e por fonte (conta, state, CMK, SNS, **Lambda única** e role).
+- Isolamento por tabela (ESM, alarmes, prefixo S3, tabela Glue) e por fonte (conta, state, CMK, SNS, **Lambda única**, role e **fila on-failure única**).
+- **Parâmetros:** a tabela DynamoDB `<projeto>-<fonte>-parametros` espelha `tables/*.yaml` (`nome_tabela`, `contrato`, `data_criacao`, `ultimo_update`).
 
 ## Estrutura
 
@@ -29,8 +30,11 @@ DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer 
 | `sources/<fonte>.yaml` | Conta produtora (`account_id`, `initial_load`) |
 | `tables/<tabela>.yaml` | Tabela capturada: `source`, `table_name`, `keys`, `columns` (+ overrides). Exemplo extra em `tables/_examples/` |
 | `src/lambda/handler.py` | Lambda writer **genérica** (uma por fonte, atende todas as tabelas; a config por tabela vem de `tables.json`) |
+| `tests/` | Testes unitários (`pytest`) e de integração na AWS (`tests/integration`); como executar em [docs/TESTES.md](docs/TESTES.md) |
+| `infra/github_oidc` | Conexão OIDC GitHub → AWS e roles de deploy: [docs/GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md) |
+| `.github/workflows/clone.yml` | Abrir uma issue `[clone]` cria uma cópia do repositório: [docs/CLONE_POR_ISSUE.md](docs/CLONE_POR_ISSUE.md) |
 | `infra/datalake` | Conta Data Lake: bucket RAW, CMK, bucket policy, Glue |
-| `infra/producer` | Conta produtora (um state por fonte): CMK, SNS, dashboard, **Lambda única** com role e, por tabela, ESM, fila e alarmes |
+| `infra/producer` | Conta produtora (um state por fonte): CMK, SNS, dashboard, **Lambda única** com role, fila on-failure única, tabela de parâmetros e, por tabela, ESM e alarmes |
 | `scripts/` | `initial_load.py`, `load_initial_to_raw.py`, `generate_trusted_ddl.py`, `apply_trusted_views.py` |
 | `mock/` | Tabelas e dados fictícios para teste (execução manual, fora do CI) |
 | `.github/workflows/` | `validate.yml` (PR) e `deploy.yml` (main, OIDC) |
@@ -53,6 +57,8 @@ python mock/data/load_data.py
 Para tabelas reais: habilite Streams `NEW_AND_OLD_IMAGES` e PITR e crie um `tables/<tabela>.yaml` para cada uma.
 
 **1. Data Lake (bucket RAW, CMK, Glue)**
+> Se `tfstate_prefix` em `config.yaml` não estiver vazio (cópias criadas por issue), coloque-o antes da `key`: `<tfstate_prefix>/datalake/raw.tfstate` e `<tfstate_prefix>/producer/<fonte>.tfstate`.
+
 ```bash
 cd infra/datalake
 terraform init -backend-config="bucket=<BUCKET_STATE>" -backend-config="key=datalake/raw.tfstate" -backend-config="region=us-east-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"

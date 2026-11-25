@@ -10,7 +10,7 @@ CDC near real-time (~1–5 min) de tabelas DynamoDB de uma ou mais **contas prod
 1. A tabela emite um evento por item alterado (`INSERT`/`MODIFY`/`REMOVE`) com `NEW_AND_OLD_IMAGES`.
 2. O ESM (um por tabela) agrupa eventos por shard (até 10.000 ou 300 s) e invoca a Lambda writer genérica da fonte.
 3. A Lambda grava o lote como um único NDJSON.gz no prefixo da tabela, com SSE-KMS.
-4. Falhas: retries + bisect; esgotados, metadados vão à SQS on-failure da tabela.
+4. Falhas: retries + bisect; a Lambda envia à **SQS on-failure única da fonte** a tabela e os parâmetros dela; esgotados os retries, o ESM envia à mesma fila os metadados do lote descartado.
 5. CloudWatch → SNS (on-call). Glue Data Catalog expõe cada tabela RAW (partition projection).
 6. A camada **Trusted** é uma view Athena por tabela, tipada e deduplicada, **gerada a partir do schema declarado no YAML**.
 
@@ -19,11 +19,11 @@ CDC near real-time (~1–5 min) de tabelas DynamoDB de uma ou mais **contas prod
 | Nível | Isolamento |
 |---|---|
 | **Fonte** (conta produtora) | State Terraform próprio (`producer/<fonte>.tfstate`), provider travado na conta (`allowed_account_ids`), CMK e SNS próprios, environment de deploy próprio |
-| **Tabela** | ESM (com seus parâmetros de lote/retry), SQS on-failure, 3 alarmes, prefixo S3 `dynamodb/<fonte>/<tabela>/`, tabela Glue `raw.dynamodb_<tabela>`, view `trusted.<fonte>_<tabela>` |
-| **Lambda da fonte** | **Uma Lambda writer genérica**, uma role, um log group e 4 alarmes de função, atendendo todas as tabelas da fonte |
+| **Tabela** | ESM (com seus parâmetros de lote/retry), item na tabela de parâmetros, 2 alarmes, prefixo S3 `dynamodb/<fonte>/<tabela>/`, tabela Glue `raw.dynamodb_<tabela>`, view `trusted.<fonte>_<tabela>` |
+| **Lambda da fonte** | **Uma Lambda writer genérica**, uma role, um log group, uma SQS on-failure, uma tabela de parâmetros, 4 alarmes de função e 1 da fila, atendendo todas as tabelas da fonte |
 | **Data Lake** (conta destino) | Um bucket RAW + CMK; uma statement de bucket policy **por tabela** (a role só escreve no próprio prefixo); uma statement de KMS **por fonte** |
 
-Cada tabela tem ESM, fila e alarmes próprios (falha de lote ou atraso numa tabela não bloqueia o stream das outras), mas **a Lambda é única por fonte**: memória, timeout e concorrência são compartilhados. Nome de recursos: `<projeto>-<fonte>-<tabela>[-sufixo]`; a role `<projeto>-<fonte>-writer` (e a Lambda de mesmo nome) é o contrato entre as duas stacks.
+Cada tabela tem ESM e alarmes próprios (falha de lote ou atraso numa tabela não bloqueia o stream das outras), mas **a Lambda é única por fonte**: memória, timeout e concorrência são compartilhados. Nome de recursos: `<projeto>-<fonte>-<tabela>[-sufixo]`; a role `<projeto>-<fonte>-writer` (e a Lambda de mesmo nome) é o contrato entre as duas stacks.
 
 ## 3. Schemas diferentes
 
@@ -61,10 +61,27 @@ Cada tabela tem ESM, fila e alarmes próprios (falha de lote ou atraso numa tabe
 ## 6. Infraestrutura
 
 ### 6.1 Stack `producer` (um state por fonte; `-var source_name=<fonte>`)
-Lê `sources/<fonte>.yaml` e todas as `tables/*.yaml` com `source == <fonte>`. Cria CMK com rotação, tópico SNS (e-mails de `config.yaml`), dashboard consolidado, **uma Lambda genérica com role e log group** e, por tabela, um ESM e uma fila on-failure.
+Lê `sources/<fonte>.yaml` e todas as `tables/*.yaml` com `source == <fonte>`. Cria CMK com rotação, tópico SNS (e-mails de `config.yaml`), dashboard consolidado, **uma Lambda genérica com role e log group** e, a **tabela de parâmetros**, a **fila on-failure única** e, por tabela, um ESM.
 
-Role única de menor privilégio: leitura dos streams **das tabelas da fonte**, `PutObject` só nos prefixos delas, as duas CMKs, as filas on-failure, logs e X-Ray. Lambda com X-Ray, log group com KMS e retenção; preconditions: Streams `NEW_AND_OLD_IMAGES` em todas as tabelas e nenhum `lambda:` por tabela. ESM por tabela (`TRIM_HORIZON`, `ReportBatchItemFailures`, bisect, retries, idade máx. 24 h, destino de falha SQS). Alarmes: da função (`iterator-age`, `errors`, `throttles`, `duration-p99`) e por tabela (`stream-lag`, `batch-failed`, `on-failure-not-empty`).
+Role única de menor privilégio: leitura dos streams **das tabelas da fonte**, `PutObject` só nos prefixos delas, as duas CMKs, a fila on-failure, logs e X-Ray. Lambda com X-Ray, log group com KMS e retenção; preconditions: Streams `NEW_AND_OLD_IMAGES` em todas as tabelas e nenhum `lambda:` por tabela. ESM por tabela (`TRIM_HORIZON`, `ReportBatchItemFailures`, bisect, retries, idade máx. 24 h, destino de falha SQS). Alarmes: da função (`iterator-age`, `errors`, `throttles`, `duration-p99`) e por tabela (`stream-lag`, `batch-failed`); um da fila (`on-failure-not-empty`).
 Parâmetros por tabela: `merge(config.yaml, override do YAML da tabela)`.
+
+#### Tabela de parâmetros `<projeto>-<fonte>-parametros`
+Espelho de `tables/*.yaml` da fonte, mantido pelo Terraform (YAML novo, alterado ou removido reflete no próximo apply). Chave: `nome_tabela`.
+
+| Atributo | Conteúdo |
+|---|---|
+| `nome_tabela` | `table_name` do YAML |
+| `contrato` | O YAML completo, como está no repositório |
+| `data_criacao` | Data/hora (UTC) do primeiro apply da tabela |
+| `ultimo_update` | Data/hora (UTC) do último apply em que o YAML mudou (qualquer alteração no arquivo, inclusive comentário) |
+
+A tabela é um catálogo para consulta: a Lambda **não** a lê (usa o `tables.json` do pacote). Editar um item à mão não muda o processamento e é sobrescrito no próximo apply. As datas ficam no state do Terraform.
+
+#### Fila `<projeto>-<fonte>-on-failure` (única)
+Recebe dois formatos de mensagem:
+- **Da Lambda** (`"tipo": "erro_processamento"`, atributo `tabela`): enviada na falha, com `tabela`, `fonte`, `erro`, `ocorrido_em`, `stream_arn`, faixa de sequence, `registros` e `parametros` (YAML da tabela + `streaming` efetivo). Um retry que dê certo depois **não remove** a mensagem. Retries no mesmo container não repetem o aviso; bisect ou outro container podem repetir.
+- **Do ESM** (formato AWS, com `DDBStreamBatchInfo`): lote **descartado** após esgotar retries/idade. A tabela está no `streamArn`. Cobre também timeout e falta de memória, em que a Lambda não consegue avisar.
 
 ### 6.2 Stack `datalake` (um state para todo o lake)
 Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte liberando `role/<projeto>-<fonte>-writer` e, opcional, `initial_load_role_arns`); bucket RAW (Block Public Access, versionamento, `BucketOwnerEnforced`, SSE-KMS, access logs, lifecycle IA → Glacier IR); bucket policy (TLS obrigatório, nega chave KMS diferente, **uma statement por tabela** restringindo a role ao prefixo, export inicial por fonte em `<tabela>-initial/`); bancos Glue `raw` e `trusted`; **uma tabela Glue por tabela** com partition projection (`dt`, `hh`).
@@ -72,7 +89,7 @@ Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte lib
 ## 7. CI/CD
 - **validate.yml (PR):** ruff, pytest (inclui validação de schema de todas as tabelas), geração de DDL, `terraform fmt/validate` e checkov nas duas stacks.
 - **deploy.yml (main):** testes e descoberta das fontes → apply **datalake** (environment `datalake-prod`) → apply **producer em matriz, uma execução por fonte** (environment `producer-<fonte>`). OIDC, state remoto S3 com lock/criptografia.
-- Configurar: variáveis `TFSTATE_BUCKET` e `DATALAKE_DEPLOY_ROLE_ARN`; em cada environment `producer-<fonte>`, `PRODUCER_DEPLOY_ROLE_ARN` da conta correspondente.
+- Configuração (roles OIDC, environments, variáveis e secrets): [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md). Os valores reais vêm de secrets; o repositório guarda só exemplos.
 
 ## 8. Procedimentos
 
@@ -90,7 +107,7 @@ Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte lib
 ## 9. Operação
 - Latência: janela de batching (60–300 s) + invocação.
 - `iterator-age` é crítico: o stream retém 24 h (fixo); atraso prolongado = perda de dados → recuperar com novo export PITR e deduplicar na Trusted. Confirme a assinatura do SNS.
-- Fila on-failure não vazia: ver logs (`put_object_failed`); mensagens trazem faixa de sequence para reprocesso.
+- Fila on-failure não vazia: ver o campo `tabela`/`erro` da mensagem e os logs (`put_object_failed`). Mensagem com `DDBStreamBatchInfo` = lote descartado, a reprocessar pela faixa de sequence (o stream retém 24 h).
 - Throughput por tabela: `streaming.*` no YAML da tabela (`parallelization_factor` máx. 10; máx. 2 consumidores por shard).
 
 ## 10. Garantias e limites

@@ -11,6 +11,7 @@ partição, se a tabela declara `partition_by`).
   então um retry do mesmo lote sobrescreve os mesmos objetos (sem duplicar).
 - Falha parcial: ReportBatchItemFailures. Em erro reportamos o primeiro SequenceNumber
   (o lote inteiro é reprocessado/bissectado pelo ESM; objetos já gravados são sobrescritos).
+- Erro: além disso, envia à SQS on-failure única uma mensagem com a tabela e os parâmetros dela.
 - Observabilidade: logs JSON estruturados + métricas EMF.
 """
 from __future__ import annotations
@@ -32,6 +33,7 @@ RAW_BUCKET = os.environ.get("RAW_BUCKET", "")
 KMS_KEY_ARN = os.environ.get("RAW_KMS_KEY_ARN", "")
 SOURCE_NAME = os.environ.get("SOURCE_NAME", "local")
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "DynamoRawIngest")
+ON_FAILURE_QUEUE_URL = os.environ.get("ON_FAILURE_QUEUE_URL", "")
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -42,7 +44,11 @@ _s3 = boto3.client(
 )
 
 
+_sqs = boto3.client("sqs", config=Config(retries={"max_attempts": 3}, connect_timeout=3, read_timeout=5))
+
 _CONFIG: dict[str, dict[str, Any]] | None = None
+# Lotes já avisados neste container: evita uma mensagem nova a cada retry do mesmo lote
+_NOTIFIED: set[tuple[str, str]] = set()
 
 
 def load_config() -> dict[str, dict[str, Any]]:
@@ -156,17 +162,50 @@ def _put(key: str, body: bytes) -> None:
     _s3.put_object(**kwargs)
 
 
+def _notify_failure(table: str, records: list[dict[str, Any]], error: str, params: dict[str, Any] | None) -> None:
+    """Registra o problema na SQS on-failure. Nunca interrompe o tratamento da falha."""
+    first_seq = records[0]["dynamodb"]["SequenceNumber"]
+    if not ON_FAILURE_QUEUE_URL or (table, first_seq) in _NOTIFIED:
+        return
+    message = {
+        "tipo": "erro_processamento",
+        "tabela": table,
+        "fonte": SOURCE_NAME,
+        "erro": error[:2000],
+        "ocorrido_em": datetime.now(timezone.utc).isoformat(),
+        "stream_arn": records[0].get("eventSourceARN"),
+        "primeiro_sequence": first_seq,
+        "ultimo_sequence": records[-1]["dynamodb"]["SequenceNumber"],
+        "registros": len(records),
+        "parametros": params,
+    }
+    try:
+        _sqs.send_message(
+            QueueUrl=ON_FAILURE_QUEUE_URL,
+            MessageBody=json.dumps(message, default=str),
+            MessageAttributes={"tabela": {"DataType": "String", "StringValue": table}},
+        )
+    except Exception as exc:  # noqa: BLE001 - o ESM ainda envia o lote descartado à mesma fila
+        _log(logging.ERROR, "failure_notification_failed", table=table, error=str(exc))
+        return
+    if len(_NOTIFIED) >= 1000:
+        _NOTIFIED.clear()
+    _NOTIFIED.add((table, first_seq))
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     records = event.get("Records") or []
     if not records:
         return {"batchItemFailures": []}
 
     first_seq = records[0]["dynamodb"]["SequenceNumber"]
+    table = "desconhecida"
     try:
         table = table_from_arn(records[0]["eventSourceARN"])
         cfg = load_config()[table]
     except (KeyError, IndexError) as exc:
         _log(logging.ERROR, "table_not_configured", error=repr(exc), arn=records[0].get("eventSourceARN"))
+        _notify_failure(table, records, f"table_not_configured: {exc!r}", None)
         return {"batchItemFailures": [{"itemIdentifier": first_seq}]}
     raw_prefix = cfg["raw_prefix"]
     partition_by = cfg.get("partition_by") or ""
@@ -184,6 +223,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - reportar qualquer falha ao ESM
         _log(logging.ERROR, "put_object_failed", table=table, records=len(records), written=written, error=str(exc))
         _emit_metric(table, "BatchFailed", 1)
+        _notify_failure(table, records, f"{type(exc).__name__}: {exc}", cfg.get("parametros") or cfg)
         return {"batchItemFailures": [{"itemIdentifier": first_seq}]}
 
     _log(logging.INFO, "batch_done", table=table, records=written, bytes=total_bytes, ms=round((time.time() - started) * 1000))

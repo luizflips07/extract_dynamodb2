@@ -49,11 +49,18 @@ data "aws_partition" "current" {}
 locals {
   # tables.json é empacotado no zip: a Lambda descobre a tabela pelo eventSourceARN e lê o prefixo/partição daqui
   table_cfg = {
-    for t in values(local.tables) : t.table_name => {
+    for k, t in local.tables : t.table_name => {
       raw_prefix   = "dynamodb/${var.source_name}/${t.table_name}"
       partition_by = try(t.partition_by, "")
+      parametros = merge(t, { # vai na mensagem de erro enviada à SQS
+        streaming = local.streaming[k]
+        # o yamldecode do Terraform lê `N` sem aspas como false (mesmo ajuste da stack datalake)
+        columns = [for c in try(t.columns, []) : merge(c, { dynamo = lookup({ "false" = "N", "true" = "Y" }, tostring(c.dynamo), tostring(c.dynamo)) })]
+      })
     }
   }
+  # Contrato = o YAML como está no repositório (LF fixo: Windows e CI geram o mesmo valor)
+  contratos = { for k, t in local.tables : k => replace(file("${path.module}/../../tables/${k}.yaml"), "\r\n", "\n") }
   streaming = { for k, t in local.tables : k => merge(local.cfg.streaming, try(t.streaming, {})) }
   alarms    = { for k, t in local.tables : k => merge(local.cfg.alarms, try(t.alarms, {})) }
   lambda    = local.cfg.lambda # a função é única: memória/timeout/concorrência valem para todas as tabelas
@@ -143,18 +150,70 @@ resource "aws_sns_topic_subscription" "email" {
   endpoint  = each.value
 }
 
-# ---------- Fila on-failure (uma por tabela: isola o reprocesso) ----------
+# ---------- Tabela de parâmetros: espelho de tables/*.yaml desta fonte ----------
+resource "aws_dynamodb_table" "parametros" {
+  name         = "${local.prefix}-parametros"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "nome_tabela"
+
+  attribute {
+    name = "nome_tabela"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.app.arn
+  }
+}
+
+# Datas guardadas no state: a de criação nunca muda; a de update muda só quando o YAML muda.
+resource "terraform_data" "data_criacao" {
+  for_each = local.tables
+  input    = timestamp()
+
+  lifecycle {
+    ignore_changes = [input]
+  }
+}
+
+resource "terraform_data" "ultimo_update" {
+  for_each         = local.tables
+  input            = timestamp()
+  triggers_replace = sha256(local.contratos[each.key])
+
+  lifecycle {
+    ignore_changes = [input]
+  }
+}
+
+resource "aws_dynamodb_table_item" "parametros" {
+  for_each   = local.tables
+  table_name = aws_dynamodb_table.parametros.name
+  hash_key   = aws_dynamodb_table.parametros.hash_key
+
+  item = jsonencode({
+    nome_tabela   = { S = each.value.table_name }
+    contrato      = { S = local.contratos[each.key] }
+    data_criacao  = { S = terraform_data.data_criacao[each.key].output }
+    ultimo_update = { S = terraform_data.ultimo_update[each.key].output }
+  })
+}
+
+# ---------- Fila on-failure ÚNICA da fonte (a mensagem identifica a tabela) ----------
 resource "aws_sqs_queue" "on_failure" {
-  for_each                   = local.tables
-  name                       = "${local.prefix}-${each.value.table_name}-on-failure"
+  name                       = "${local.prefix}-on-failure"
   kms_master_key_id          = aws_kms_key.app.id
   message_retention_seconds  = 1209600
   visibility_timeout_seconds = 300
 }
 
 resource "aws_sqs_queue_policy" "on_failure" {
-  for_each  = local.tables
-  queue_url = aws_sqs_queue.on_failure[each.key].id
+  queue_url = aws_sqs_queue.on_failure.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -162,7 +221,7 @@ resource "aws_sqs_queue_policy" "on_failure" {
       Effect    = "Deny"
       Principal = "*"
       Action    = "sqs:*"
-      Resource  = aws_sqs_queue.on_failure[each.key].arn
+      Resource  = aws_sqs_queue.on_failure.arn
       Condition = { Bool = { "aws:SecureTransport" = "false" } }
     }]
   })
@@ -208,7 +267,7 @@ data "aws_iam_policy_document" "writer" {
   statement {
     sid       = "OnFailureDestinations"
     actions   = ["sqs:SendMessage"]
-    resources = [for q in aws_sqs_queue.on_failure : q.arn]
+    resources = [aws_sqs_queue.on_failure.arn]
   }
   statement {
     sid       = "AppKey"
@@ -260,10 +319,11 @@ resource "aws_lambda_function" "writer" {
 
   environment {
     variables = {
-      RAW_BUCKET      = local.cfg.datalake.raw_bucket
-      RAW_KMS_KEY_ARN = local.cfg.datalake.raw_kms_key_arn
-      SOURCE_NAME     = var.source_name
-      LOG_LEVEL       = "INFO"
+      RAW_BUCKET           = local.cfg.datalake.raw_bucket
+      RAW_KMS_KEY_ARN      = local.cfg.datalake.raw_kms_key_arn
+      SOURCE_NAME          = var.source_name
+      LOG_LEVEL            = "INFO"
+      ON_FAILURE_QUEUE_URL = aws_sqs_queue.on_failure.id
     }
   }
 
@@ -306,7 +366,7 @@ resource "aws_lambda_event_source_mapping" "stream" {
 
   destination_config {
     on_failure {
-      destination_arn = aws_sqs_queue.on_failure[each.key].arn
+      destination_arn = aws_sqs_queue.on_failure.arn
     }
   }
 }
@@ -376,12 +436,11 @@ resource "aws_cloudwatch_metric_alarm" "batch_failed" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "on_failure_depth" {
-  for_each            = local.tables
-  alarm_name          = "${local.prefix}-${each.value.table_name}-on-failure-not-empty"
-  alarm_description   = "Lotes esgotaram retries e foram para a SQS on-failure."
+  alarm_name          = "${local.prefix}-on-failure-not-empty"
+  alarm_description   = "Há falha registrada na SQS on-failure; a mensagem identifica a tabela."
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateNumberOfMessagesVisible"
-  dimensions          = { QueueName = aws_sqs_queue.on_failure[each.key].name }
+  dimensions          = { QueueName = aws_sqs_queue.on_failure.name }
   statistic           = "Maximum"
   period              = 60
   evaluation_periods  = 1
@@ -455,20 +514,28 @@ output "alarm_topic_arn" {
   value = aws_sns_topic.alarms.arn
 }
 
+output "on_failure_queue_url" {
+  description = "Fila on-failure única da fonte"
+  value       = aws_sqs_queue.on_failure.id
+}
+
+output "parameters_table" {
+  description = "Tabela DynamoDB que espelha tables/*.yaml"
+  value       = aws_dynamodb_table.parametros.name
+}
+
 output "tables" {
-  description = "Por tabela: stream, ESM, fila on-failure, destino no RAW e alarmes"
+  description = "Por tabela: stream, ESM, destino no RAW e alarmes"
   value = {
     for k, t in local.tables : k => {
       table_name                = t.table_name
       stream_arn                = data.aws_dynamodb_table.this[k].stream_arn
       event_source_mapping_uuid = aws_lambda_event_source_mapping.stream[k].uuid
-      on_failure_queue_url      = aws_sqs_queue.on_failure[k].id
       raw_s3_prefix             = "s3://${local.cfg.datalake.raw_bucket}/${local.table_cfg[t.table_name].raw_prefix}/"
       partition_by              = local.table_cfg[t.table_name].partition_by
       alarms = [
         aws_cloudwatch_metric_alarm.stream_lag[k].alarm_name,
         aws_cloudwatch_metric_alarm.batch_failed[k].alarm_name,
-        aws_cloudwatch_metric_alarm.on_failure_depth[k].alarm_name,
       ]
     }
   }

@@ -1,5 +1,6 @@
 # Configuração global do produtor (lida pelo Terraform via yamldecode)
 project: dynamodb-produtor
+tfstate_prefix: ""            # pasta no bucket de state ("" = raiz). O clone por issue preenche com o project
 environment: prod            # dev | hml | prod
 region: us-east-1
 

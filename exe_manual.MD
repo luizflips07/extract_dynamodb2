@@ -42,6 +42,8 @@ python mock/data/load_data.py --tables faturamento       # 200 faturas
 Confirme: `aws dynamodb describe-table --table-name faturamento --query "Table.[StreamSpecification,ItemCount]"`.
 
 ## 3. Data Lake (Glue/RAW) — cria a tabela `raw.dynamodb_faturamento`
+> Se `tfstate_prefix` em `config.yaml` não estiver vazio (cópias criadas por issue), coloque-o antes da `key`: `<tfstate_prefix>/datalake/raw.tfstate` e `<tfstate_prefix>/producer/<fonte>.tfstate`.
+
 ```bash
 cd infra/datalake
 terraform init -backend-config="bucket=<BUCKET_STATE>" -backend-config="key=datalake/raw.tfstate" -backend-config="region=us-east-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
@@ -65,7 +67,13 @@ terraform init -backend-config="bucket=<BUCKET_STATE>" -backend-config="key=prod
 terraform apply -var="source_name=local"
 cd ../..
 ```
-Cria a **Lambda única** da fonte (`dynamodb-produtor-local-writer`, com role e log group; ela recebe a configuração de todas as tabelas em `tables.json`) e, para cada tabela, o ESM (lê o stream a partir de `TRIM_HORIZON`), a fila SQS de falhas e 3 alarmes. Tabela nova = só ESM, fila e alarmes, mais a atualização do `tables.json` da mesma Lambda. Os outputs mostram função, role e, por tabela, ESM, fila, prefixo RAW e alarmes (`terraform output tables`).
+Cria a **Lambda única** da fonte (`dynamodb-produtor-local-writer`, com role e log group; ela recebe a configuração de todas as tabelas em `tables.json`) e, para cada tabela, o ESM (lê o stream a partir de `TRIM_HORIZON`) e 2 alarmes. Cria também, uma vez por fonte, a fila SQS de falhas, o alarme dela e a tabela de parâmetros (`dynamodb-produtor-local-parametros`, um item por YAML). Tabela nova = só ESM, alarmes e item de parâmetros, mais a atualização do `tables.json` da mesma Lambda. Os outputs mostram função, role e, por tabela, ESM, prefixo RAW e alarmes (`terraform output tables`); a fila e a tabela de parâmetros saem em `on_failure_queue_url` e `parameters_table`.
+
+Para conferir os parâmetros:
+
+```powershell
+aws dynamodb scan --table-name dynamodb-produtor-local-parametros --query "Items[].[nome_tabela.S,data_criacao.S,ultimo_update.S]" --output table
+```
 
 ## 6. View Trusted
 ```bash
@@ -95,7 +103,7 @@ SELECT fatura_id, valor FROM trusted.local_faturamento WHERE fatura_id IN ('F-E2
 | Export falha por PITR | Habilite PITR na tabela (o mock já habilita) e repita o passo 4. |
 | `AccessDenied` no KMS/S3 | Rode o passo 3 depois de criar a tabela no YAML (a bucket policy/CMK é por tabela) e confira `raw_kms_key_arn`. |
 | `HIVE_S3_THROTTLING` | Filtre por `dt` e/ou ajuste `datalake.partition_start_date`. |
-| Mensagens na fila `…-on-failure` | Lote que esgotou retries; veja os logs da Lambda no CloudWatch. |
+| Mensagens na fila `…-on-failure` | Falha em alguma tabela: a mensagem traz `tabela`, `erro` e `parametros` (ou, se for lote descartado, o `streamArn`). Veja os logs da Lambda no CloudWatch. |
 
 ## 9. Limpeza (opcional)
 ```bash

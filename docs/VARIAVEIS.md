@@ -17,6 +17,7 @@ Lido pelo Terraform das duas stacks (`yamldecode`) e pelos scripts em `scripts/`
 | `environment` | Ajustar | Tag `environment` em todos os recursos (`dev`/`hml`/`prod`). | `prod` |
 | `region` | **Obrigatório** | Região AWS das duas stacks e dos scripts. **Deve ser a região das tabelas DynamoDB** (o stream só é lido na mesma região). | `us-east-1` |
 | `datalake.account_id` | **Obrigatório** | ID da conta do Data Lake (dona do bucket RAW). O provider da stack `datalake` é travado nessa conta (`allowed_account_ids`) e o export inicial usa como `S3BucketOwner`. | `111111111111` (placeholder) |
+| `tfstate_prefix` | Opcional | Pasta das chaves de state no bucket. Vazio mantém as chaves na raiz. O clone por issue preenche com o `project`. **Não mude depois do 1º apply** sem migrar o state (`terraform init -migrate-state`). | `""` |
 | `datalake.raw_bucket` | **Obrigatório** | Nome do bucket RAW. Precisa ser **único no mundo** e só pode ter minúsculas, números, `-` e `.` (sem `_`). O bucket de logs é `<raw_bucket>-access-logs`. | `meu-datalake-raw-001` (placeholder) |
 | `datalake.raw_kms_key_arn` | **Obrigatório** | ARN da CMK que criptografa o RAW. Só existe depois do 1º apply da stack `datalake`: copie o output `raw_kms_key_arn` (`terraform output -raw raw_kms_key_arn`). A Lambda usa para gravar e o IAM aponta para ela. | `arn:aws:kms:us-east-1:111111111111:key/0000…` (placeholder) |
 | `datalake.partition_start_date` | Ajustar | Primeiro dia (`AAAA-MM-DD`) que o Athena considera nas partições `dt`. Limita a quantidade de partições listadas (sem isso há `HIVE_S3_THROTTLING`). Recue se for fazer backfill de dados antigos. Padrão se omitido: `2024-01-01`. | `2026-11-01` |
@@ -26,7 +27,7 @@ Lido pelo Terraform das duas stacks (`yamldecode`) e pelos scripts em `scripts/`
 | `streaming.batch_size` | Opcional | Máx. de registros por invocação (até 10.000). | `10000` |
 | `streaming.max_batching_window_seconds` | Opcional | Janela de acumulação do lote (0–300 s). Define a latência do dado no RAW (~janela + segundos). | `300` |
 | `streaming.parallelization_factor` | Opcional | Lotes simultâneos por shard (1–10). Mantém a ordem por chave. | `1` |
-| `streaming.max_retry_attempts` | Opcional | Retries antes de enviar o lote para a SQS on-failure. | `5` |
+| `streaming.max_retry_attempts` | Opcional | Retries antes de enviar o lote para a SQS on-failure (única por fonte). | `5` |
 | `streaming.max_record_age_seconds` | Opcional | Idade máxima de um registro do stream (retenção do stream é 24 h = 86400). | `86400` |
 | `streaming.bisect_batch_on_error` | Opcional | Divide o lote ao falhar para isolar o registro ruim. | `true` |
 | `lambda.runtime` / `lambda.architecture` | Opcional | Runtime e arquitetura (`arm64` é mais barato). | `python3.12` / `arm64` |
@@ -83,20 +84,21 @@ partition_by: uf
 - **Se o valor da coluna mudar** (`MODIFY`), o evento vai para a partição do **novo** valor; a Trusted mantém o último evento por chave, então o estado atual continua correto.
 - Exemplo completo: `tables/_examples/clientes_particionada.yaml`.
 
-## 4. GitHub Actions (Settings → Secrets and variables → Actions → Variables)
+## 4. GitHub Actions (Settings → Secrets and variables → Actions)
 
-Usadas em `.github/workflows/deploy.yml`.
+Usados em `.github/workflows/deploy.yml`. Passo a passo (OIDC, roles e script de cadastro) em [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md).
 
-| Variável | Escopo | Para que serve | Valor atual |
-|---|---|---|---|
-| `TFSTATE_BUCKET` | Repositório | Bucket S3 do state do Terraform (mesma região de `AWS_REGION`, versionamento e criptografia ligados). Nome sem `_`. | `tf-state-meu-projeto-001` (placeholder) |
-| `AWS_REGION` | Repositório | Região das credenciais OIDC e do backend S3. **Igual a `region` do `config.yaml`.** | `us-east-1` |
-| `DATALAKE_DEPLOY_ROLE_ARN` | **Repositório** (e, se quiser, também no environment `datalake-prod`) | ARN da role OIDC que o workflow assume na **conta do Data Lake**. O job `load` não usa environment, então a variável precisa existir no nível do repositório. | (a criar) |
-| `PRODUCER_DEPLOY_ROLE_ARN` | Environment `producer-<fonte>` (um por fonte) | ARN da role OIDC assumida na **conta produtora** dessa fonte. | (a criar) |
+| Nome | Tipo / escopo | Para que serve |
+|---|---|---|
+| `AWS_REGION` | Variável do repositório | Região das credenciais e do backend. Igual a `region` do `config.yaml`. |
+| `TFSTATE_BUCKET` | Variável do repositório | Bucket do state do Terraform. |
+| `DATALAKE_DEPLOY_ROLE_ARN` | Secret do repositório | Role OIDC da conta do Data Lake. |
+| `PRODUCER_DEPLOY_ROLE_ARN` | Secret do environment `producer-<fonte>` | Role OIDC da conta produtora. |
+| `DATALAKE_ACCOUNT_ID`, `RAW_BUCKET`, `ALARM_EMAILS`, `SOURCE_ACCOUNT_IDS` | Secrets do repositório | Substituem os valores de exemplo de `config.yaml` e `sources/` dentro do runner (`scripts/ci_config.py`). |
 
 Nomes fixos no código (altere em `deploy.yml` se quiser outros):
 - Environments: `datalake-prod` (configure aprovação manual) e `producer-<fonte>` (criar um por arquivo de `sources/`).
-- Chaves de state: `datalake/raw.tfstate` e `producer/<fonte>.tfstate` (linhas `terraform init -backend-config="key=…"`).
+- Chaves de state: `<tfstate_prefix>/datalake/raw.tfstate` e `<tfstate_prefix>/producer/<fonte>.tfstate` (`tfstate_prefix` vem do `config.yaml`; vazio = sem pasta; o `deploy.yml` aplica sozinho).
 - Versão do Terraform: `terraform_version: "1.11.4"` em `deploy.yml` e `validate.yml` (mínimo 1.11, por causa de `use_lockfile`).
 
 ## 5. Execução manual (sem GitHub Actions)

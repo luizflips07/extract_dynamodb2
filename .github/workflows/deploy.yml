@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.ref == 'refs/heads/main' # as roles OIDC só confiam na main
     runs-on: ubuntu-latest
     outputs:
       sources: ${{ steps.matrix.outputs.sources }}
@@ -44,24 +45,41 @@ jobs:
       has_changes: ${{ steps.plan.outputs.has_changes }}
       changes: ${{ steps.plan.outputs.changes }}
       sources: ${{ steps.plan.outputs.sources }}
+      raw_kms_key_id: ${{ steps.key.outputs.raw_kms_key_id }}
     steps:
       - uses: actions/checkout@v4
+      - name: Preenche config.yaml e sources/ com os secrets
+        run: python3 scripts/ci_config.py
+        env:
+          DATALAKE_ACCOUNT_ID: ${{ secrets.DATALAKE_ACCOUNT_ID }}
+          RAW_BUCKET: ${{ secrets.RAW_BUCKET }}
+          KMS_OPTIONAL: "1" # a CMK é criada neste job
+          ALARM_EMAILS: ${{ secrets.ALARM_EMAILS }}
+          SOURCE_ACCOUNT_IDS: ${{ secrets.SOURCE_ACCOUNT_IDS }}
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install boto3 pyyaml
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.DATALAKE_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.DATALAKE_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - id: plan
         name: Tabelas novas / com formato alterado (antes do apply)
         run: python scripts/table_sync.py plan --out changes.json
+      - name: Pasta do tfstate (tfstate_prefix do config.yaml)
+        run: python -c "import yaml; p=(yaml.safe_load(open('config.yaml', encoding='utf-8')).get('tfstate_prefix') or '').strip('/'); print('STATE_PREFIX=' + (p + '/' if p else ''))" >> "$GITHUB_ENV"
       - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: "1.11.4" }
+        with: { terraform_version: "1.11.4", terraform_wrapper: false }
       - working-directory: infra/datalake
-        run: terraform init -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" -backend-config="key=datalake/raw.tfstate" -backend-config="region=${{ vars.AWS_REGION }}" -backend-config="use_lockfile=true" -backend-config="encrypt=true"
+        run: terraform init -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" -backend-config="key=${{ env.STATE_PREFIX }}datalake/raw.tfstate" -backend-config="region=${{ vars.AWS_REGION }}" -backend-config="use_lockfile=true" -backend-config="encrypt=true"
       - working-directory: infra/datalake
         run: terraform apply -auto-approve
+      # só o id: o ARN contém a conta, que é secret e não pode sair como output do job
+      - id: key
+        working-directory: infra/datalake
+        run: |
+          ARN=$(terraform output -raw raw_kms_key_arn)
+          echo "raw_kms_key_id=${ARN##*/}" >> "$GITHUB_OUTPUT"
 
   # 2) Conta produtora (uma execução por fonte): Lambdas/ESM e, só para tabelas novas/alteradas,
   #    export PITR (carga inicial) aguardando concluir.
@@ -72,23 +90,33 @@ jobs:
       fail-fast: false
       matrix:
         source: ${{ fromJson(needs.test.outputs.sources) }}
-    # um environment por fonte (producer-<fonte>) com a variável PRODUCER_DEPLOY_ROLE_ARN da conta dela
+    # um environment por fonte (producer-<fonte>) com o secret PRODUCER_DEPLOY_ROLE_ARN da conta dela
     environment: producer-${{ matrix.source }}
     env:
       CHANGES: ${{ needs.datalake.outputs.changes }}
     steps:
       - uses: actions/checkout@v4
+      - name: Preenche config.yaml e sources/ com os secrets
+        run: python3 scripts/ci_config.py
+        env:
+          DATALAKE_ACCOUNT_ID: ${{ secrets.DATALAKE_ACCOUNT_ID }}
+          RAW_BUCKET: ${{ secrets.RAW_BUCKET }}
+          RAW_KMS_KEY_ID: ${{ needs.datalake.outputs.raw_kms_key_id }}
+          ALARM_EMAILS: ${{ secrets.ALARM_EMAILS }}
+          SOURCE_ACCOUNT_IDS: ${{ secrets.SOURCE_ACCOUNT_IDS }}
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install boto3 pyyaml
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.PRODUCER_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.PRODUCER_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+      - name: Pasta do tfstate (tfstate_prefix do config.yaml)
+        run: python -c "import yaml; p=(yaml.safe_load(open('config.yaml', encoding='utf-8')).get('tfstate_prefix') or '').strip('/'); print('STATE_PREFIX=' + (p + '/' if p else ''))" >> "$GITHUB_ENV"
       - uses: hashicorp/setup-terraform@v3
         with: { terraform_version: "1.11.4" }
       - working-directory: infra/producer
-        run: terraform init -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" -backend-config="key=producer/${{ matrix.source }}.tfstate" -backend-config="region=${{ vars.AWS_REGION }}" -backend-config="use_lockfile=true" -backend-config="encrypt=true"
+        run: terraform init -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" -backend-config="key=${{ env.STATE_PREFIX }}producer/${{ matrix.source }}.tfstate" -backend-config="region=${{ vars.AWS_REGION }}" -backend-config="use_lockfile=true" -backend-config="encrypt=true"
       - working-directory: infra/producer
         run: terraform apply -auto-approve -var="source_name=${{ matrix.source }}"
       - name: Export (carga inicial) das tabelas novas/alteradas desta fonte
@@ -107,12 +135,20 @@ jobs:
       CHANGES: ${{ needs.datalake.outputs.changes }}
     steps:
       - uses: actions/checkout@v4
+      - name: Preenche config.yaml e sources/ com os secrets
+        run: python3 scripts/ci_config.py
+        env:
+          DATALAKE_ACCOUNT_ID: ${{ secrets.DATALAKE_ACCOUNT_ID }}
+          RAW_BUCKET: ${{ secrets.RAW_BUCKET }}
+          RAW_KMS_KEY_ID: ${{ needs.datalake.outputs.raw_kms_key_id }}
+          ALARM_EMAILS: ${{ secrets.ALARM_EMAILS }}
+          SOURCE_ACCOUNT_IDS: ${{ secrets.SOURCE_ACCOUNT_IDS }}
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install boto3 pyyaml
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.DATALAKE_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.DATALAKE_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - run: |
           printf '%s' "$CHANGES" > changes.json

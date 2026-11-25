@@ -1,0 +1,66 @@
+name: clone
+
+# Issue "[clone] ..." -> cria um repositório privado com a cópia deste. Ver docs/CLONE_POR_ISSUE.md
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  clone:
+    # Quem não é dono/membro/colaborador não dispara nada (o job usa um token que cria repositórios)
+    if: >-
+      startsWith(github.event.issue.title, '[clone]') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      OWNER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false # o push abaixo usa o CLONE_TOKEN, não o token do workflow
+
+      # O corpo da issue é texto do usuário: entra só por variável de ambiente, nunca dentro do script
+      - id: request
+        name: Valida o pedido e grava project e tfstate_prefix no config.yaml
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: python3 scripts/clone_request.py
+
+      - name: Cria o repositório e copia o conteúdo
+        env:
+          GH_TOKEN: ${{ secrets.CLONE_TOKEN }}
+          NAME: ${{ steps.request.outputs.repo_name }}
+          PROJECT: ${{ steps.request.outputs.project }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::error::secret CLONE_TOKEN não configurado"; exit 1; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Configura project e tfstate_prefix: $PROJECT" config.yaml
+          gh repo create "$OWNER/$NAME" --private
+          # Actions desligado ANTES do push: o clone não pode disparar o deploy.yml no repositório novo
+          gh api --method PUT "repos/$OWNER/$NAME/actions/permissions" -F enabled=false
+          gh auth setup-git
+          git push "https://github.com/$OWNER/$NAME.git" HEAD:refs/heads/main
+
+      - name: Responde e fecha a issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.request.outputs.repo_name }}
+          PROJECT: ${{ steps.request.outputs.project }}
+        run: |
+          gh issue close "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --comment "Repositório criado: https://github.com/$OWNER/$NAME (privado, com o GitHub Actions desligado). project: $PROJECT; tfstate na pasta $PROJECT/ do bucket de state."
+
+      - name: Avisa a falha na issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "A cópia falhou. Detalhes: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

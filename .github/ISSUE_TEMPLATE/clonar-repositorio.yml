@@ -1,0 +1,23 @@
+name: Clonar este repositório
+description: Cria um repositório novo (privado) com uma cópia deste.
+title: "[clone] "
+body:
+  - type: markdown
+    attributes:
+      value: "Mantenha o `[clone]` no início do título. Só dono, membros e colaboradores disparam a automação."
+  - type: input
+    id: repo_name
+    attributes:
+      label: Nome do novo repositório
+      description: Apenas letras, números, ponto, hífen e sublinhado (até 100 caracteres).
+      placeholder: extract-dynamodb-vendas
+    validations:
+      required: true
+  - type: input
+    id: project
+    attributes:
+      label: Project (prefixo dos recursos e do tfstate)
+      description: "3 a 30 caracteres: minúsculas, números e hífen, começando por letra. Diferente do project deste repositório."
+      placeholder: dynamodb-vendas
+    validations:
+      required: true

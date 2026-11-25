@@ -81,3 +81,34 @@ def test_unconfigured_table_fails_batch_without_writing():
 
 def test_table_from_arn():
     assert handler.table_from_arn(_arn("minha-tabela")) == "minha-tabela"
+
+
+def _fail_once(records, send_side_effect=None):
+    with mock.patch.object(handler, "_s3") as s3, mock.patch.object(handler, "_sqs") as sqs, \
+            mock.patch.object(handler, "ON_FAILURE_QUEUE_URL", "https://sqs/fila"):
+        s3.put_object.side_effect = RuntimeError("boom")
+        sqs.send_message.side_effect = send_side_effect
+        first = handler.handler({"Records": records}, None)
+        second = handler.handler({"Records": records}, None)  # retry do mesmo lote
+    return first, second, sqs
+
+
+def test_failure_sends_table_parameters_to_the_single_queue_once():
+    handler._NOTIFIED.clear()
+    first, second, sqs = _fail_once([_rec("500", table="vendas"), _rec("501", table="vendas")])
+    assert first == second == {"batchItemFailures": [{"itemIdentifier": "500"}]}
+    assert sqs.send_message.call_count == 1
+    kw = sqs.send_message.call_args.kwargs
+    assert kw["QueueUrl"] == "https://sqs/fila"
+    assert kw["MessageAttributes"]["tabela"]["StringValue"] == "vendas"
+    body = json.loads(kw["MessageBody"])
+    assert (body["tabela"], body["primeiro_sequence"], body["ultimo_sequence"], body["registros"]) == ("vendas", "500", "501", 2)
+    assert body["parametros"]["raw_prefix"] == "dynamodb/local/vendas"
+    assert "boom" in body["erro"]
+
+
+def test_queue_unavailable_does_not_break_failure_handling_and_retries_notification():
+    handler._NOTIFIED.clear()
+    first, second, sqs = _fail_once([_rec("600")], send_side_effect=RuntimeError("sqs fora"))
+    assert first == second == {"batchItemFailures": [{"itemIdentifier": "600"}]}
+    assert sqs.send_message.call_count == 2
