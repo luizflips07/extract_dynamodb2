@@ -4,5 +4,5 @@ table_name: estoque
 keys: [produto_id]
 columns:
   - { name: produto_id,    dynamo: S }
-  - { name: quantidade,    dynamo: N, type: int }
+  - { name: quantidade,    dynamo: N, type: bigint }
   - { name: atualizado_em, dynamo: S, type: timestamp }
