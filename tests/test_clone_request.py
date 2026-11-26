@@ -1,3 +1,4 @@
+import shutil
 import sys
 from pathlib import Path
 
@@ -9,63 +10,83 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import clone_request as cr  # noqa: E402
 
+GOOD = {
+    cr.NAME_FIELD: "novo-repo",
+    cr.PROJECT_FIELD: "dynamodb-vendas",
+    cr.REGION_FIELD: "sa-east-1",
+    cr.BUCKET_FIELD: "empresa-vendas-raw-001",
+    cr.ACCOUNT_FIELD: "123456789012",
+}
+FORM = ROOT / ".github" / "ISSUE_TEMPLATE" / "clonar-repositorio.yml"
 
-def _body(name: str = "novo-repo", project: str = "dynamodb-vendas") -> str:
-    return f"### {cr.NAME_FIELD}\r\n\r\n{name}\r\n\r\n### {cr.PROJECT_FIELD}\r\n\r\n{project}\r\n"
+
+def _body(**changes: str) -> str:
+    keys = {"name": cr.NAME_FIELD, "project": cr.PROJECT_FIELD, "region": cr.REGION_FIELD,
+            "bucket": cr.BUCKET_FIELD, "account": cr.ACCOUNT_FIELD}
+    values = GOOD | {keys[k]: v for k, v in changes.items()}
+    return "".join(f"### {label}\r\n\r\n{value}\r\n\r\n" for label, value in values.items())
 
 
-def test_reads_both_fields_from_issue_form():
-    assert cr.repo_name(_body("extract-dynamodb_v2.1")) == "extract-dynamodb_v2.1"
-    assert cr.project_name(_body()) == "dynamodb-vendas"
+def test_reads_all_required_fields():
+    assert cr.parse(_body()) == GOOD
 
 
-@pytest.mark.parametrize("name", ["", "..", "a b", "x;rm -rf .", "outro/dono", "$(id)", "a" * 101, "_No response_"])
-def test_rejects_unsafe_or_empty_names(name):
+@pytest.mark.parametrize("changes", [
+    {"name": ""}, {"name": ".."}, {"name": "outro/dono"}, {"name": "x;rm -rf ."},
+    {"project": ""}, {"project": "Vendas"}, {"project": "ab"}, {"project": "a" * 31},
+    {"region": ""}, {"region": "brasil"}, {"region": "us-east-1; id"},
+    {"bucket": ""}, {"bucket": "Bucket_X"}, {"bucket": "a" * 52},
+    {"account": ""}, {"account": "12345"}, {"account": "_No response_"},
+])
+def test_rejects_missing_or_invalid_values(changes):
     with pytest.raises(ValueError):
-        cr.repo_name(_body(name=name))
+        cr.parse(_body(**changes))
 
 
-@pytest.mark.parametrize("project", ["", "ab", "Vendas", "1vendas", "vendas_x", "vendas-", "a/b", "a" * 31])
-def test_rejects_invalid_project(project):
-    with pytest.raises(ValueError):
-        cr.project_name(_body(project=project))
+def test_reports_every_problem_at_once():
+    with pytest.raises(ValueError) as error:
+        cr.parse(_body(region="", account="x"))
+    assert cr.REGION_FIELD in str(error.value) and cr.ACCOUNT_FIELD in str(error.value)
 
 
 def test_rejects_free_text_issue():
     with pytest.raises(ValueError):
-        cr.repo_name("quero um clone")
+        cr.parse("quero um clone")
 
 
-def test_sets_project_and_state_folder_keeping_the_rest_of_config():
-    original = (ROOT / "config.yaml").read_bytes().decode("utf-8")
-    updated = cr.apply_project(original, "dynamodb-vendas")
-    before, after = yaml.safe_load(original), yaml.safe_load(updated)
-    assert (after["project"], after["tfstate_prefix"]) == ("dynamodb-vendas", "dynamodb-vendas")
-    assert {k: v for k, v in after.items() if k not in ("project", "tfstate_prefix")} == {
-        k: v for k, v in before.items() if k not in ("project", "tfstate_prefix")
-    }
-    assert updated.count("#") == original.count("#")
-    assert updated.count("\r\n") == original.count("\r\n")
+def _repo(tmp_path: Path) -> Path:
+    shutil.copy(ROOT / "config.yaml", tmp_path / "config.yaml")
+    shutil.copytree(ROOT / "sources", tmp_path / "sources")
+    return tmp_path
 
 
-def test_rejects_the_same_project_as_the_origin():
-    with pytest.raises(ValueError):
-        cr.apply_project('project: abc\ntfstate_prefix: ""\n', "abc")
-
-
-def test_main_updates_config_and_writes_outputs(tmp_path, monkeypatch):
-    config, output = tmp_path / "config.yaml", tmp_path / "out"
-    config.write_text('project: origem\ntfstate_prefix: ""\n', encoding="utf-8")
+def test_main_writes_the_values_into_the_copy(tmp_path, monkeypatch):
+    root, output = _repo(tmp_path), tmp_path / "out"
     monkeypatch.setenv("ISSUE_BODY", _body())
-    monkeypatch.setenv("CONFIG_PATH", str(config))
+    monkeypatch.setenv("ROOT_PATH", str(root))
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     assert cr.main() == 0
-    assert yaml.safe_load(config.read_text(encoding="utf-8"))["tfstate_prefix"] == "dynamodb-vendas"
+    cfg = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
+    assert (cfg["project"], cfg["tfstate_prefix"], cfg["region"]) == ("dynamodb-vendas", "dynamodb-vendas", "sa-east-1")
+    assert cfg["datalake"]["account_id"] == "123456789012"
+    assert cfg["datalake"]["raw_bucket"] == "empresa-vendas-raw-001"
+    assert cfg["datalake"]["raw_kms_key_arn"].startswith("arn:aws:kms:sa-east-1:123456789012:key/0000")
+    assert cfg["streaming"] == yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))["streaming"]
+    assert yaml.safe_load((root / "sources" / "local.yaml").read_text(encoding="utf-8"))["account_id"] == "123456789012"
     assert output.read_text(encoding="utf-8").splitlines() == ["repo_name=novo-repo", "project=dynamodb-vendas"]
 
 
-def test_form_labels_match_parser():
-    form = yaml.safe_load((ROOT / ".github" / "ISSUE_TEMPLATE" / "clonar-repositorio.yml").read_text(encoding="utf-8"))
-    labels = [f["attributes"].get("label") for f in form["body"]]
-    assert cr.NAME_FIELD in labels and cr.PROJECT_FIELD in labels
+def test_invalid_request_changes_nothing(tmp_path, monkeypatch):
+    root = _repo(tmp_path)
+    monkeypatch.setenv("ISSUE_BODY", _body(project="dynamodb-produtor"))  # igual ao de origem
+    monkeypatch.setenv("ROOT_PATH", str(root))
+    before = (root / "config.yaml").read_bytes()
+    assert cr.main() == 1
+    assert (root / "config.yaml").read_bytes() == before
+
+
+def test_form_asks_every_field_as_required():
+    form = yaml.safe_load(FORM.read_text(encoding="utf-8"))
+    fields = {f["attributes"]["label"]: f["validations"]["required"] for f in form["body"] if f["type"] != "markdown"}
+    assert fields == dict.fromkeys(cr.FIELDS, True)
     assert form["title"].startswith("[clone]")

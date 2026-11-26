@@ -27,7 +27,7 @@ jobs:
 
       # O corpo da issue é texto do usuário: entra só por variável de ambiente, nunca dentro do script
       - id: request
-        name: Valida o pedido e grava project e tfstate_prefix no config.yaml
+        name: Valida o pedido e grava os parâmetros em config.yaml e sources/
         env:
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: python3 scripts/clone_request.py
@@ -41,7 +41,7 @@ jobs:
           if [ -z "$GH_TOKEN" ]; then echo "::error::secret CLONE_TOKEN não configurado"; exit 1; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Configura project e tfstate_prefix: $PROJECT" config.yaml
+          git commit -m "Configura os parametros do projeto $PROJECT" config.yaml sources
           gh repo create "$OWNER/$NAME" --private
           # Actions desligado ANTES do push: o clone não pode disparar o deploy.yml no repositório novo
           gh api --method PUT "repos/$OWNER/$NAME/actions/permissions" -F enabled=false
