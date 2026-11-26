@@ -12,6 +12,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +93,18 @@ def test_every_stream_mapping_is_enabled_and_uses_the_single_queue(env):
     for m in mappings:
         assert m["State"] == "Enabled"
         assert m["DestinationConfig"]["OnFailure"]["Destination"] == queue_arn
+
+
+# ---------- Formato das tabelas Glue (após deploy/recriação) ----------
+def test_glue_tables_match_the_yaml_format(env):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import table_sync
+
+    glue = env["session"].client("glue")
+    database = env["cfg"]["datalake"].get("glue_database", "raw")
+    for table in env["tables"].values():
+        current = glue.get_table(DatabaseName=database, Name=table_sync.glue_table_name(table))["Table"]
+        assert table_sync.classify(table, current) == "unchanged", f"{table['table_name']}: falta o deploy do formato novo"
 
 
 # ---------- Falhas forçadas ----------

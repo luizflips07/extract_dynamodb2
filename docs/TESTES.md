@@ -72,6 +72,7 @@ python -m pytest tests/integration -v
 | Teste | O que faz | O que deve acontecer |
 |---|---|---|
 | `test_parameter_table_mirrors_yaml_files` | Lê `<projeto>-<fonte>-parametros` | Um item por YAML, `contrato` igual ao arquivo, `data_criacao` ≤ `ultimo_update` |
+| `test_glue_tables_match_the_yaml_format` | Compara cada YAML com a tabela Glue (precisa de `glue:GetTable`, na conta do Data Lake) | Todas `unchanged`: o formato aplicado é o do repositório |
 | `test_every_stream_mapping_is_enabled_and_uses_the_single_queue` | Lista os mapeamentos da Lambda | Um por tabela, `Enabled`, destino de falha = fila única |
 | `test_failed_batch_sends_table_parameters_to_the_queue` | Invoca a Lambda com um lote falso cuja chave o S3 recusa | `batchItemFailures` e mensagem na fila com tabela, erro e parâmetros |
 | `test_unconfigured_table_is_reported_without_parameters` | Invoca com uma tabela inexistente na configuração | Mensagem com `parametros: null` |
@@ -138,3 +139,69 @@ terraform plan -var="source_name=local"
 - Execução do `deploy.yml` no GitHub Actions (resultado do teste manual em [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)).
 - Consulta à view Trusted (ver `exe_manual.MD`).
 - Automação de clone por issue (só a leitura do formulário tem teste unitário).
+
+## 6. Testes do pipeline no GitHub (manuais)
+
+Precisam de `gh auth login` e do repositório configurado ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)). Situação: **ainda não executados**.
+
+### 6.1 `validate.yml` em um PR
+
+```powershell
+git switch -c teste/validate
+```
+
+Altere algo em `src/`, `tests/`, `scripts/`, `infra/` ou `tables/`, faça o commit e:
+
+```powershell
+git push -u origin teste/validate
+```
+
+```powershell
+gh pr create --fill
+```
+
+```powershell
+gh pr checks --watch
+```
+
+Esperado hoje: o passo `ruff check` falha, porque o `ruff` recente ativa regras que o código não segue. O job `terraform` roda `fmt`, `validate` e `checkov`.
+
+### 6.2 Disparo automático e recriação por formato alterado
+
+Os dois são testados juntos: mude o `type` de uma coluna (ex.: em `tables/estoque.yaml`, `quantidade` de `int` para `bigint`) e leve a mudança à `main`.
+
+```powershell
+gh run list --workflow deploy.yml --limit 3
+```
+
+Esperado:
+- uma execução com evento `push`, sem disparo manual;
+- após a aprovação do `datalake-prod`, o log mostra `estoque changed` e as demais `unchanged`;
+- a tabela Glue `raw.dynamodb_estoque` é recriada, há um novo export só de `estoque` e o job `load` recria a view;
+- os arquivos antigos no S3 continuam lá e a contagem em `trusted.local_estoque` não muda.
+
+Depois, confira o formato:
+
+```powershell
+$env:RUN_AWS_TESTS = "1"
+```
+
+```powershell
+python -m pytest tests/integration -v -k glue
+```
+
+### 6.3 Clone por issue
+
+Cadastre o secret (o comando pede o valor sem mostrá-lo; não cole o token em chat, arquivo ou issue):
+
+```powershell
+gh secret set CLONE_TOKEN --repo <dono>/<repositorio>
+```
+
+Abra a issue pelo modelo **Clonar este repositório** (*Issues → New issue*) e acompanhe:
+
+```powershell
+gh run list --workflow clone.yml --limit 3
+```
+
+Esperado: repositório privado criado, com o Actions desligado, `project` e `tfstate_prefix` trocados no `config.yaml`, e a issue fechada com o link. Ver [CLONE_POR_ISSUE.md](CLONE_POR_ISSUE.md).
