@@ -151,7 +151,7 @@ Precisam de `gh auth login` e do repositório configurado ([GITHUB_ACTIONS.md](G
 | `validate.yml` em PR | **Reprovado** | `ruff` e `checkov` falharam no [PR 1](https://github.com/luizflips07/extract_dynamodb2/pull/1). O `ruff` passou após o `ruff.toml`; o `checkov` continua falhando (6.4) |
 | Disparo automático por `tables/*.yaml` | Passou | O merge do PR 1 iniciou o `deploy` com evento `push` |
 | Recriação por formato alterado (`estoque.quantidade`: `int` → `bigint`) | Passou | Só `estoque` saiu como `changed`; tabela Glue substituída, export e view só dela; Trusted com 100 linhas e coluna `bigint`; arquivos antigos mantidos na RAW; só o `ultimo_update` de `estoque` mudou |
-| Clone por issue | **Parcial** | Sem o secret `CLONE_TOKEN`: gatilho, validação do formulário e aviso de falha na issue passaram. A criação do repositório **não foi testada** |
+| Clone por issue | **Parcial** | Sem o secret `CLONE_TOKEN`. Pedido válido ([issue 3](https://github.com/luizflips07/extract_dynamodb2/issues/3), dados fictícios): campos lidos e gravados, parou no token. Pedido sem região e com conta inválida ([issue 4](https://github.com/luizflips07/extract_dynamodb2/issues/4)): recusado, citando os dois campos. A criação do repositório **não foi testada** |
 
 ### 6.1 `validate.yml` em um PR
 
@@ -213,7 +213,7 @@ Abra a issue pelo modelo **Clonar este repositório** (*Issues → New issue*) e
 gh run list --workflow clone.yml --limit 3
 ```
 
-Esperado: repositório privado criado, com o Actions desligado, `project` e `tfstate_prefix` trocados no `config.yaml`, e a issue fechada com o link. Ver [CLONE_POR_ISSUE.md](CLONE_POR_ISSUE.md).
+Esperado: repositório privado criado, com o Actions desligado, os parâmetros gravados em `config.yaml` e `sources/`, e a issue fechada com o link. Ver [PASSO_A_PASSO_ISSUE.md](PASSO_A_PASSO_ISSUE.md).
 
 ### 6.4 Achados do `checkov` em aberto
 
