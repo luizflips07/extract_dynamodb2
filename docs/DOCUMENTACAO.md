@@ -129,15 +129,17 @@ Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte lib
 | Custos | Streams gratuito, poucos PUTs, arm64, lifecycle, retenção de logs |
 | Sustentabilidade | Serverless, Graviton, compressão, tiering |
 
-## 12. Status de validação (25/11/2026)
+## 12. Status de validação (26/11/2026)
 | Item | Resultado |
 |---|---|
 | `pytest` | 57 passando; 5 de integração pulados por padrão |
 | Testes de integração na AWS ([TESTES.md](TESTES.md)) | 5/5 passando |
 | `deploy.yml` numa conta sem o pipeline | Passou ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)) |
 | Views Trusted no Athena (contagens, `MODIFY`, `REMOVE`) | OK |
-| `validate.yml` (ruff, checkov) | Não validado; o `ruff` recente acusa erros no código atual |
-| Disparo por mudança em `tables/`, recriação por formato alterado, múltiplas contas, clone por issue | Não testados |
+| Disparo por mudança em `tables/` e recriação por formato alterado | OK ([TESTES.md](TESTES.md), seção 6) |
+| `validate.yml` | `ruff`, `pytest`, `fmt` e `validate` OK; `checkov` reprovado |
+| Clone por issue | Parcial: falta testar a criação do repositório (`CLONE_TOKEN`) |
+| Múltiplas contas | Não testado |
 
 ## 13. Carga inicial no RAW (snapshot)
 1. `python scripts/initial_load.py --all --source local` exporta cada tabela (PITR) para `dynamodb/<fonte>/<tabela>-initial/` (DynamoDB JSON; a tabela Glue **não** lê esse prefixo).

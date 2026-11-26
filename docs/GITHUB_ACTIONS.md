@@ -95,7 +95,7 @@ Ambiente recriado do zero (Data Lake e producer apagados; 5 tabelas do `mock/` r
 | `MODIFY` e `REMOVE` em `faturamento` | Refletidos na Trusted em cerca de 5 min |
 | Testes de integração (`docs/TESTES.md`) | 5 de 5 passaram |
 
-Não foi testado: o disparo automático por mudança em `tables/*.yaml`, a recriação de tabela com formato alterado e mais de uma conta.
+Em 26/11/2026 passaram também o disparo automático por mudança em `tables/*.yaml` e a recriação de tabela com formato alterado ([TESTES.md](TESTES.md), seção 6). Não foi testado mais de uma conta.
 
 **O que fica visível nos logs** (repositório público): conta, bucket RAW, e-mail e ARNs aparecem mascarados (`***`); o nome do bucket de state, que é uma variável, aparece. Cadastre-o como secret se isso importar. O GitHub também avisa que as actions usadas miram o Node.js 20, já obsoleto: atualize as versões quando possível.
 

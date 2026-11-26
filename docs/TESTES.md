@@ -142,7 +142,16 @@ terraform plan -var="source_name=local"
 
 ## 6. Testes do pipeline no GitHub (manuais)
 
-Precisam de `gh auth login` e do repositório configurado ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)). Situação: **ainda não executados**.
+Precisam de `gh auth login` e do repositório configurado ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)).
+
+### Resultados (26/11/2026)
+
+| Teste | Resultado | Evidência |
+|---|---|---|
+| `validate.yml` em PR | **Reprovado** | `ruff` e `checkov` falharam no [PR 1](https://github.com/luizflips07/extract_dynamodb2/pull/1). O `ruff` passou após o `ruff.toml`; o `checkov` continua falhando (6.4) |
+| Disparo automático por `tables/*.yaml` | Passou | O merge do PR 1 iniciou o `deploy` com evento `push` |
+| Recriação por formato alterado (`estoque.quantidade`: `int` → `bigint`) | Passou | Só `estoque` saiu como `changed`; tabela Glue substituída, export e view só dela; Trusted com 100 linhas e coluna `bigint`; arquivos antigos mantidos na RAW; só o `ultimo_update` de `estoque` mudou |
+| Clone por issue | **Parcial** | Sem o secret `CLONE_TOKEN`: gatilho, validação do formulário e aviso de falha na issue passaram. A criação do repositório **não foi testada** |
 
 ### 6.1 `validate.yml` em um PR
 
@@ -164,7 +173,7 @@ gh pr create --fill
 gh pr checks --watch
 ```
 
-Esperado hoje: o passo `ruff check` falha, porque o `ruff` recente ativa regras que o código não segue. O job `terraform` roda `fmt`, `validate` e `checkov`.
+O job `lambda-and-schemas` deve passar (regras fixadas em `ruff.toml`). O job `terraform` roda `fmt`, `validate` e `checkov`, e hoje falha no `checkov`.
 
 ### 6.2 Disparo automático e recriação por formato alterado
 
@@ -205,3 +214,18 @@ gh run list --workflow clone.yml --limit 3
 ```
 
 Esperado: repositório privado criado, com o Actions desligado, `project` e `tfstate_prefix` trocados no `config.yaml`, e a issue fechada com o link. Ver [CLONE_POR_ISSUE.md](CLONE_POR_ISSUE.md).
+
+### 6.4 Achados do `checkov` em aberto
+
+Nenhuma verificação foi desligada. Para cada item, decidir entre corrigir e registrar a exceção (`#checkov:skip=<ID>:<motivo>`).
+
+| ID | Assunto | Onde |
+|---|---|---|
+| `CKV_AWS_109`, `111`, `356` | Política de chave KMS ampla | `kms` (datalake), `kms_app` (producer) |
+| `CKV_AWS_116`, `117`, `272` | Lambda sem DLQ, VPC e assinatura de código | `writer`, `registrar` |
+| `CKV_AWS_50`, `115`, `158`, `173` | X-Ray, concorrência reservada, KMS no log e nas variáveis | `registrar` |
+| `CKV_AWS_144` | Replicação entre regiões | buckets RAW e de logs |
+| `CKV_AWS_21`, `145`, `CKV2_AWS_62`, `65` | Versionamento, KMS, notificações e ACL | bucket de logs |
+| `CKV_AWS_300` | Abortar uploads incompletos | lifecycle dos buckets |
+
+O `checkov` lê `infra/datalake` e `infra/producer`; `infra/github_oidc` não é verificada.

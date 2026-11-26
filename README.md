@@ -120,7 +120,7 @@ SELECT count(*) FROM trusted.local_clientes WHERE id = 'E2E-1';                 
 ```bash
 pytest -q    # Lambda, gerador de DDL, carga do snapshot e gerador do mock
 ```
-Testes de integração na AWS e como executá-los: [docs/TESTES.md](docs/TESTES.md). O `checkov` do `validate.yml` não foi validado.
+Testes de integração na AWS e como executá-los: [docs/TESTES.md](docs/TESTES.md). O `checkov` do `validate.yml` hoje reprova (achados em [docs/TESTES.md](docs/TESTES.md)).
 
 ## Mapeamento Well-Architected
 | Pilar | Práticas |
