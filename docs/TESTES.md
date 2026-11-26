@@ -151,7 +151,7 @@ Precisam de `gh auth login` e do repositório configurado ([GITHUB_ACTIONS.md](G
 | `validate.yml` em PR | **Reprovado** | `ruff` e `checkov` falharam no [PR 1](https://github.com/luizflips07/extract_dynamodb2/pull/1). O `ruff` passou após o `ruff.toml`; o `checkov` continua falhando (6.4) |
 | Disparo automático por `tables/*.yaml` | Passou | O merge do PR 1 iniciou o `deploy` com evento `push` |
 | Recriação por formato alterado (`estoque.quantidade`: `int` → `bigint`) | Passou | Só `estoque` saiu como `changed`; tabela Glue substituída, export e view só dela; Trusted com 100 linhas e coluna `bigint`; arquivos antigos mantidos na RAW; só o `ultimo_update` de `estoque` mudou |
-| Clone por issue | **Parcial** | Sem o secret `CLONE_TOKEN`. Pedido válido ([issue 3](https://github.com/luizflips07/extract_dynamodb2/issues/3), dados fictícios): campos lidos e gravados, parou no token. Pedido sem região e com conta inválida ([issue 4](https://github.com/luizflips07/extract_dynamodb2/issues/4)): recusado, citando os dois campos. A criação do repositório **não foi testada** |
+| Clone por issue | Passou | Com o `CLONE_TOKEN` ([issue 5](https://github.com/luizflips07/extract_dynamodb2/issues/5), dados fictícios): repositório privado criado com a `main` e um commit com os parâmetros em `config.yaml` e `sources/local.yaml`; Actions desligado, nenhuma execução, secrets não copiados; issue respondida e fechada. Recusa de campos inválidos na [issue 4](https://github.com/luizflips07/extract_dynamodb2/issues/4). Não testado: deploy a partir da cópia |
 
 ### 6.1 `validate.yml` em um PR
 

@@ -138,7 +138,7 @@ Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte lib
 | Views Trusted no Athena (contagens, `MODIFY`, `REMOVE`) | OK |
 | Disparo por mudança em `tables/` e recriação por formato alterado | OK ([TESTES.md](TESTES.md), seção 6) |
 | `validate.yml` | `ruff`, `pytest`, `fmt` e `validate` OK; `checkov` reprovado |
-| Clone por issue | Parcial: falta testar a criação do repositório (`CLONE_TOKEN`) |
+| Clone por issue | OK ([TESTES.md](TESTES.md), seção 6); deploy a partir da cópia não testado |
 | Múltiplas contas | Não testado |
 
 ## 13. Carga inicial no RAW (snapshot)
