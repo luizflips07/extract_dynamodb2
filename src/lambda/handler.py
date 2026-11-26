@@ -2,8 +2,9 @@
 
 Uma única função atende todas as tabelas de uma fonte. A tabela de cada invocação vem do
 `eventSourceARN` dos registros (um Event Source Mapping por tabela) e a configuração dela
-(prefixo RAW, coluna de partição) vem do parâmetro `tables.json` (empacotado pelo Terraform a
-partir de tables/*.yaml) ou da variável de ambiente TABLES_CONFIG (JSON, tem precedência).
+(prefixo RAW, coluna de partição) é lida da tabela DynamoDB de parâmetros (PARAMETERS_TABLE,
+item `nome_tabela`, atributo `configuracao`, gravado pelo Terraform a partir de tables/*.yaml),
+com cache por container de PARAMETERS_TTL_SECONDS (padrão 60 s).
 
 Um lote do Event Source Mapping vira UM objeto no S3 (ou um por valor da coluna de
 partição, se a tabela declara `partition_by`).
@@ -34,6 +35,8 @@ KMS_KEY_ARN = os.environ.get("RAW_KMS_KEY_ARN", "")
 SOURCE_NAME = os.environ.get("SOURCE_NAME", "local")
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "DynamoRawIngest")
 ON_FAILURE_QUEUE_URL = os.environ.get("ON_FAILURE_QUEUE_URL", "")
+PARAMETERS_TABLE = os.environ.get("PARAMETERS_TABLE", "")
+PARAMETERS_TTL_SECONDS = int(os.environ.get("PARAMETERS_TTL_SECONDS", "60"))
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -45,23 +48,35 @@ _s3 = boto3.client(
 
 
 _sqs = boto3.client("sqs", config=Config(retries={"max_attempts": 3}, connect_timeout=3, read_timeout=5))
+_ddb = boto3.client("dynamodb", config=Config(retries={"max_attempts": 3}, connect_timeout=3, read_timeout=5))
 
-_CONFIG: dict[str, dict[str, Any]] | None = None
+# {tabela: (válido até, configuração)}
+_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 # Lotes já avisados neste container: evita uma mensagem nova a cada retry do mesmo lote
 _NOTIFIED: set[tuple[str, str]] = set()
 
 
-def load_config() -> dict[str, dict[str, Any]]:
-    """{nome_da_tabela: {"raw_prefix": ..., "partition_by": ""}} (cache por container)."""
-    global _CONFIG
-    if _CONFIG is None:
-        raw = os.environ.get("TABLES_CONFIG")
-        if raw:
-            _CONFIG = json.loads(raw)
-        else:
-            with open(os.path.join(os.path.dirname(__file__), "tables.json"), encoding="utf-8") as f:
-                _CONFIG = json.load(f)
-    return _CONFIG
+def load_table_config(table: str) -> dict[str, Any] | None:
+    """{"raw_prefix": ..., "partition_by": ..., "parametros": {...}} da tabela, ou None se não há item.
+
+    Se a releitura falhar e houver um valor anterior em cache, segue com ele.
+    """
+    cached = _CACHE.get(table)
+    if cached and cached[0] > time.time():
+        return cached[1]
+    try:
+        item = _ddb.get_item(TableName=PARAMETERS_TABLE, Key={"nome_tabela": {"S": table}}).get("Item")
+        cfg = json.loads(item["configuracao"]["S"]) if item and "configuracao" in item else None
+    except Exception as exc:  # noqa: BLE001
+        if not cached:
+            raise
+        _log(logging.WARNING, "parameters_refresh_failed_using_cache", table=table, error=str(exc))
+        return cached[1]
+    if cfg is None:
+        _CACHE.pop(table, None)  # ausência não é guardada: o item pode estar sendo criado
+        return None
+    _CACHE[table] = (time.time() + PARAMETERS_TTL_SECONDS, cfg)
+    return cfg
 
 
 def table_from_arn(arn: str) -> str:
@@ -202,10 +217,17 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     table = "desconhecida"
     try:
         table = table_from_arn(records[0]["eventSourceARN"])
-        cfg = load_config()[table]
+        cfg = load_table_config(table)
+        if cfg is None:
+            raise KeyError(table)
     except (KeyError, IndexError) as exc:
         _log(logging.ERROR, "table_not_configured", error=repr(exc), arn=records[0].get("eventSourceARN"))
         _notify_failure(table, records, f"table_not_configured: {exc!r}", None)
+        return {"batchItemFailures": [{"itemIdentifier": first_seq}]}
+    except Exception as exc:  # noqa: BLE001 - tabela de parâmetros indisponível: o ESM tenta de novo
+        _log(logging.ERROR, "parameters_read_failed", table=table, error=str(exc))
+        _emit_metric(table, "BatchFailed", 1)
+        _notify_failure(table, records, f"parameters_read_failed: {type(exc).__name__}: {exc}", None)
         return {"batchItemFailures": [{"itemIdentifier": first_seq}]}
     raw_prefix = cfg["raw_prefix"]
     partition_by = cfg.get("partition_by") or ""

@@ -27,7 +27,8 @@ Os de integração aparecem como `s` (pulados), o que é o esperado.
 
 | Arquivo | O que garante |
 |---|---|
-| `test_handler.py` | Chave S3 determinística, NDJSON.gz, falha parcial, roteamento por tabela, tabela não configurada, aviso na SQS com parâmetros (uma vez por lote) e fila indisponível |
+| `test_handler.py` | Chave S3 determinística, NDJSON.gz, falha parcial, roteamento por tabela, tabela não configurada, aviso na SQS com parâmetros (uma vez por lote), fila indisponível e leitura da tabela de parâmetros (cache, releitura, indisponibilidade, item ausente) |
+| `test_oidc_provider.py` | Criar ou reaproveitar o provedor OIDC da conta |
 | `test_partitioning.py` | Particionamento do RAW por coluna (`partition_by`) |
 | `test_generate_ddl.py` | Views Trusted e schema de todos os `tables/*.yaml` |
 | `test_load_initial.py` | Carga inicial (snapshot) |
@@ -71,7 +72,7 @@ python -m pytest tests/integration -v
 
 | Teste | O que faz | O que deve acontecer |
 |---|---|---|
-| `test_parameter_table_mirrors_yaml_files` | Lê `<projeto>-<fonte>-parametros` | Um item por YAML, `contrato` igual ao arquivo, `data_criacao` ≤ `ultimo_update` |
+| `test_parameter_table_mirrors_yaml_files` | Lê `<projeto>-<fonte>-parametros` | Um item por YAML, `contrato` igual ao arquivo, `configuracao` com o prefixo e a partição certos, `data_criacao` ≤ `ultimo_update` |
 | `test_glue_tables_match_the_yaml_format` | Compara cada YAML com a tabela Glue (precisa de `glue:GetTable`, na conta do Data Lake) | Todas `unchanged`: o formato aplicado é o do repositório |
 | `test_every_stream_mapping_is_enabled_and_uses_the_single_queue` | Lista os mapeamentos da Lambda | Um por tabela, `Enabled`, destino de falha = fila única |
 | `test_failed_batch_sends_table_parameters_to_the_queue` | Invoca a Lambda com um lote falso cuja chave o S3 recusa | `batchItemFailures` e mensagem na fila com tabela, erro e parâmetros |
@@ -127,7 +128,7 @@ Mensagens na fila (a leitura não apaga; a mensagem volta em 30 s):
 aws sqs receive-message --queue-url (aws sqs get-queue-url --queue-name dynamodb-produtor-local-on-failure --query QueueUrl --output text) --max-number-of-messages 10 --message-attribute-names All
 ```
 
-**`ultimo_update` ao mudar um YAML:** altere um arquivo em `tables/` e rode o plan (na pasta `infra/producer`, já com `terraform init`). Devem aparecer apenas `aws_dynamodb_table_item.parametros["<tabela>"]` e `terraform_data.ultimo_update["<tabela>"]`; `data_criacao` não muda. Se a mudança for em `keys`, `columns`, `partition_by` ou `streaming`, a Lambda e o mapeamento também aparecem.
+**`ultimo_update` ao mudar um YAML:** altere um arquivo em `tables/` e rode o plan (na pasta `infra/producer`, já com `terraform init`). Devem aparecer apenas `aws_dynamodb_table_item.parametros["<tabela>"]` e `terraform_data.ultimo_update["<tabela>"]`; `data_criacao` não muda. Se a mudança for em `streaming`, o mapeamento também aparece; o código da Lambda não muda.
 
 ```powershell
 terraform plan -var="source_name=local"

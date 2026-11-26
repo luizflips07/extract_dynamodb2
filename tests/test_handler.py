@@ -112,3 +112,51 @@ def test_queue_unavailable_does_not_break_failure_handling_and_retries_notificat
     first, second, sqs = _fail_once([_rec("600")], send_side_effect=RuntimeError("sqs fora"))
     assert first == second == {"batchItemFailures": [{"itemIdentifier": "600"}]}
     assert sqs.send_message.call_count == 2
+
+
+def _run(table="clientes", seq="900"):
+    with mock.patch.object(handler, "_s3") as s3:
+        out = handler.handler({"Records": [_rec(seq, table=table)]}, None)
+    return out, s3
+
+
+def test_config_comes_from_parameter_table_and_is_cached(parameters):
+    _run()
+    _run()
+    assert parameters.calls == [("projeto-local-parametros", "clientes")]
+
+
+def test_changed_parameter_is_used_after_cache_expires(parameters):
+    with mock.patch.object(handler, "PARAMETERS_TTL_SECONDS", 0):
+        _run()
+        parameters.items["clientes"] = json.dumps({"raw_prefix": "dynamodb/local/novo", "partition_by": ""})
+        _, s3 = _run()
+    assert s3.put_object.call_args.kwargs["Key"].startswith("dynamodb/local/novo/")
+
+
+def test_uses_cached_config_when_refresh_fails(parameters):
+    with mock.patch.object(handler, "PARAMETERS_TTL_SECONDS", 0):
+        _run()
+        parameters.error = RuntimeError("dynamo fora")
+        out, s3 = _run()
+    assert out == {"batchItemFailures": []}
+    s3.put_object.assert_called_once()
+
+
+def test_parameter_table_unavailable_without_cache_fails_batch(parameters):
+    handler._NOTIFIED.clear()
+    parameters.error = RuntimeError("dynamo fora")
+    with mock.patch.object(handler, "_sqs") as sqs, \
+            mock.patch.object(handler, "ON_FAILURE_QUEUE_URL", "https://sqs/fila"):
+        out, s3 = _run()
+    assert out == {"batchItemFailures": [{"itemIdentifier": "900"}]}
+    s3.put_object.assert_not_called()
+    assert json.loads(sqs.send_message.call_args.kwargs["MessageBody"])["erro"].startswith("parameters_read_failed")
+
+
+def test_missing_item_is_not_cached(parameters):
+    out, _ = _run(table="nova")
+    assert out == {"batchItemFailures": [{"itemIdentifier": "900"}]}
+    parameters.items["nova"] = json.dumps({"raw_prefix": "dynamodb/local/nova", "partition_by": ""})
+    out, _ = _run(table="nova")
+    assert out == {"batchItemFailures": []}

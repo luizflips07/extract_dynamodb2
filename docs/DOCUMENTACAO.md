@@ -40,7 +40,7 @@ Cada tabela tem ESM e alarmes próprios (falha de lote ou atraso numa tabela nã
 | `config.yaml` | Global: projeto, ambiente, região, Data Lake (conta, bucket, CMK), padrões de ESM/Lambda/alarmes, tags |
 | `sources/<fonte>.yaml` | `name`, `account_id`, `initial_load`, opcional `initial_load_role_arns` |
 | `tables/<tabela>.yaml` | `source`, `table_name`, `glue_table`, overrides opcionais (`streaming`, `lambda`, `alarms`), `keys`, `columns` |
-| `src/lambda/handler.py` | Lambda writer **genérica** (única por fonte; descobre a tabela pelo `eventSourceARN` e lê a config em `tables.json`, gerado pelo Terraform) |
+| `src/lambda/handler.py` | Lambda writer **genérica** (única por fonte; descobre a tabela pelo `eventSourceARN` e lê a config dela na tabela DynamoDB de parâmetros) |
 | `infra/producer/` | Stack por fonte: CMK, SNS, dashboard e `module "table"` (for_each) |
 | `infra/producer/main.tf` | Lambda única, role, SNS, CMK e, por tabela: ESM, SQS on-failure e alarmes |
 | `infra/datalake/` | `main.tf` (leitura dos YAMLs), `kms.tf`, `s3.tf` (bucket, policy), `glue.tf` |
@@ -54,8 +54,8 @@ Cada tabela tem ESM e alarmes próprios (falha de lote ou atraso numa tabela nã
 - Escrita com `aws:kms` (CMK do Data Lake), Bucket Key, checksum SHA256, `bucket-owner-full-control`.
 - Erro no `PutObject` → `batchItemFailures` com o primeiro `SequenceNumber`.
 - Logs JSON e métricas EMF (`DynamoRawIngest`: `RecordsWritten`, `BytesWritten`, `BatchFailed`, dimensão `Table`).
-- **Genérica:** uma função atende N tabelas. O ESM de cada tabela entrega registros com `eventSourceARN`; a Lambda extrai o nome da tabela e busca `{raw_prefix, partition_by}` em `tables.json` (empacotado no zip pelo Terraform a partir de `tables/*.yaml` da fonte; `TABLES_CONFIG` na env sobrescreve, para testes). Tabela fora da config: lote reportado como falha (vai para a SQS), sem gravar.
-- Variáveis de ambiente (comuns): `RAW_BUCKET`, `RAW_KMS_KEY_ARN`, `SOURCE_NAME`, `LOG_LEVEL`.
+- **Genérica:** uma função atende N tabelas. O ESM de cada tabela entrega registros com `eventSourceARN`; a Lambda extrai o nome da tabela e lê o item dela na tabela de parâmetros (`GetItem`, atributo `configuracao`), com cache por container de 60 s (`PARAMETERS_TTL_SECONDS`). Tabela sem item: lote reportado como falha (vai para a SQS), sem gravar. Tabela de parâmetros indisponível: usa o último valor em cache; sem cache, o lote falha (`parameters_read_failed`) e o ESM tenta de novo.
+- Variáveis de ambiente (comuns): `RAW_BUCKET`, `RAW_KMS_KEY_ARN`, `SOURCE_NAME`, `LOG_LEVEL`, `ON_FAILURE_QUEUE_URL`, `PARAMETERS_TABLE`.
 - Métricas EMF por tabela (`DynamoRawIngest`, dimensão `Table`): `RecordsWritten`, `BytesWritten`, `BatchFailed` e `StreamLagMs` (atraso evento→RAW; a `IteratorAge` da AWS é só por função).
 
 ## 6. Infraestrutura
@@ -63,20 +63,21 @@ Cada tabela tem ESM e alarmes próprios (falha de lote ou atraso numa tabela nã
 ### 6.1 Stack `producer` (um state por fonte; `-var source_name=<fonte>`)
 Lê `sources/<fonte>.yaml` e todas as `tables/*.yaml` com `source == <fonte>`. Cria CMK com rotação, tópico SNS (e-mails de `config.yaml`), dashboard consolidado, **uma Lambda genérica com role e log group** e, a **tabela de parâmetros**, a **fila on-failure única** e, por tabela, um ESM.
 
-Role única de menor privilégio: leitura dos streams **das tabelas da fonte**, `PutObject` só nos prefixos delas, as duas CMKs, a fila on-failure, logs e X-Ray. Lambda com X-Ray, log group com KMS e retenção; preconditions: Streams `NEW_AND_OLD_IMAGES` em todas as tabelas e nenhum `lambda:` por tabela. ESM por tabela (`TRIM_HORIZON`, `ReportBatchItemFailures`, bisect, retries, idade máx. 24 h, destino de falha SQS). Alarmes: da função (`iterator-age`, `errors`, `throttles`, `duration-p99`) e por tabela (`stream-lag`, `batch-failed`); um da fila (`on-failure-not-empty`).
+Role única de menor privilégio: leitura dos streams **das tabelas da fonte**, `PutObject` só nos prefixos delas, as duas CMKs, a fila on-failure, `GetItem` na tabela de parâmetros, logs e X-Ray. Lambda com X-Ray, log group com KMS e retenção; preconditions: Streams `NEW_AND_OLD_IMAGES` em todas as tabelas e nenhum `lambda:` por tabela. ESM por tabela (`TRIM_HORIZON`, `ReportBatchItemFailures`, bisect, retries, idade máx. 24 h, destino de falha SQS). Alarmes: da função (`iterator-age`, `errors`, `throttles`, `duration-p99`) e por tabela (`stream-lag`, `batch-failed`); um da fila (`on-failure-not-empty`).
 Parâmetros por tabela: `merge(config.yaml, override do YAML da tabela)`.
 
 #### Tabela de parâmetros `<projeto>-<fonte>-parametros`
-Espelho de `tables/*.yaml` da fonte, mantido pelo Terraform (YAML novo, alterado ou removido reflete no próximo apply). Chave: `nome_tabela`.
+Espelho de `tables/*.yaml` da fonte, lido pela Lambda e mantido pelo Terraform (YAML novo, alterado ou removido reflete no próximo apply). Chave: `nome_tabela`.
 
 | Atributo | Conteúdo |
 |---|---|
 | `nome_tabela` | `table_name` do YAML |
 | `contrato` | O YAML completo, como está no repositório |
+| `configuracao` | JSON usado pela Lambda: `raw_prefix`, `partition_by` e `parametros` (YAML + `streaming` efetivo) |
 | `data_criacao` | Data/hora (UTC) do primeiro apply da tabela |
 | `ultimo_update` | Data/hora (UTC) do último apply em que o YAML mudou (qualquer alteração no arquivo, inclusive comentário) |
 
-A tabela é um catálogo para consulta: a Lambda **não** a lê (usa o `tables.json` do pacote). Editar um item à mão não muda o processamento e é sobrescrito no próximo apply. As datas ficam no state do Terraform.
+A Lambda usa o atributo `configuracao`; `contrato` é para consulta. Mudança em um item vale em até 60 s, sem republicar a função. **Altere sempre o YAML:** uma edição à mão passa a valer no processamento e é sobrescrita no próximo apply; apagar o item faz os lotes da tabela falharem. As datas ficam no state do Terraform.
 
 #### Fila `<projeto>-<fonte>-on-failure` (única)
 Recebe dois formatos de mensagem:
@@ -152,7 +153,7 @@ Notas de implementação descobertas no teste ponta a ponta:
 
 ## 14. Particionamento opcional do RAW (`partition_by`)
 - Declarado em `tables/<tabela>.yaml` (`partition_by`). Parametros e regras: `docs/VARIAVEIS.md` (seção 3).
-- **Lambda:** `partition_by` (campo da tabela em `tables.json`, só preenchido quando a tabela declara a coluna) faz o lote ser dividido por valor; um objeto por valor em `<prefixo>/<coluna>=<valor>/dt=…/hh=…/<seq>-<seq>.json.gz`. A lógica de valor/normalização está em `src/lambda/partitioning.py`, **compartilhada** com `scripts/load_initial_to_raw.py` para que o snapshot use o mesmo caminho.
+- **Lambda:** `partition_by` (campo de `configuracao` na tabela de parâmetros, só preenchido quando a tabela declara a coluna) faz o lote ser dividido por valor; um objeto por valor em `<prefixo>/<coluna>=<valor>/dt=…/hh=…/<seq>-<seq>.json.gz`. A lógica de valor/normalização está em `src/lambda/partitioning.py`, **compartilhada** com `scripts/load_initial_to_raw.py` para que o snapshot use o mesmo caminho.
 - **Glue (`infra/datalake/glue.tf`):** a coluna vira a 1ª partição (`[<coluna>, dt, hh]`) e a tabela deixa de usar *partition projection*: as partições são registradas dinamicamente por valor encontrado (Lambda `<project>-partition-registrar`, `infra/datalake/partition_registrar.tf`, acionada por S3 → EventBridge a cada arquivo novo; `src/registrar/handler.py`). *Preconditions* validam que a coluna existe em `columns`, que não usa nome reservado e que `keys` estão em `columns`.
 - **Trusted:** a view é criada normalmente para tabelas particionadas.
 - Sem `partition_by`, nada muda (mesmo layout, mesma tabela Glue).

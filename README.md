@@ -20,7 +20,7 @@ DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer 
 - **RAW** é schema-agnóstico: envelope CDC (`eventName`, `Keys`, `NewImage`, `OldImage`, `SequenceNumber`, …) com atributos em DynamoDB JSON.
 - **Trusted** é uma view por tabela gerada do schema declarado em `tables/<tabela>.yaml` (tipos convertidos, último evento por chave, `REMOVE` descartado).
 - Isolamento por tabela (ESM, alarmes, prefixo S3, tabela Glue) e por fonte (conta, state, CMK, SNS, **Lambda única**, role e **fila on-failure única**).
-- **Parâmetros:** a tabela DynamoDB `<projeto>-<fonte>-parametros` espelha `tables/*.yaml` (`nome_tabela`, `contrato`, `data_criacao`, `ultimo_update`).
+- **Parâmetros:** a tabela DynamoDB `<projeto>-<fonte>-parametros` espelha `tables/*.yaml` (`nome_tabela`, `contrato`, `configuracao`, `data_criacao`, `ultimo_update`); a Lambda lê a `configuracao` dela.
 
 ## Estrutura
 
@@ -29,7 +29,7 @@ DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer 
 | `config.yaml` | Região, Data Lake (conta, bucket, CMK, `partition_start_date`), padrões de ESM/Lambda/alarmes, tags |
 | `sources/<fonte>.yaml` | Conta produtora (`account_id`, `initial_load`) |
 | `tables/<tabela>.yaml` | Tabela capturada: `source`, `table_name`, `keys`, `columns` (+ overrides). Exemplo extra em `tables/_examples/` |
-| `src/lambda/handler.py` | Lambda writer **genérica** (uma por fonte, atende todas as tabelas; a config por tabela vem de `tables.json`) |
+| `src/lambda/handler.py` | Lambda writer **genérica** (uma por fonte, atende todas as tabelas; a config por tabela vem da tabela DynamoDB de parâmetros) |
 | `tests/` | Testes unitários (`pytest`) e de integração na AWS (`tests/integration`); como executar em [docs/TESTES.md](docs/TESTES.md) |
 | `infra/github_oidc` | Conexão OIDC GitHub → AWS e roles de deploy: [docs/GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md) |
 | `.github/workflows/clone.yml` | Abrir uma issue `[clone]` cria uma cópia do repositório: [docs/CLONE_POR_ISSUE.md](docs/CLONE_POR_ISSUE.md) |

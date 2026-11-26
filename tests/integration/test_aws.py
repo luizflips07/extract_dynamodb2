@@ -74,6 +74,9 @@ def test_parameter_table_mirrors_yaml_files(env):
     for name, item in items.items():
         yaml_text = env["files"][name].read_text(encoding="utf-8").replace("\r\n", "\n")
         assert item["contrato"]["S"] == yaml_text, f"contrato de {name} difere do YAML: falta aplicar o Terraform?"
+        lambda_cfg = json.loads(item["configuracao"]["S"])
+        assert lambda_cfg["raw_prefix"] == f"dynamodb/{SOURCE}/{name}"
+        assert lambda_cfg["partition_by"] == env["tables"][name].get("partition_by", "")
         created = datetime.fromisoformat(item["data_criacao"]["S"].replace("Z", "+00:00"))
         updated = datetime.fromisoformat(item["ultimo_update"]["S"].replace("Z", "+00:00"))
         assert created <= updated

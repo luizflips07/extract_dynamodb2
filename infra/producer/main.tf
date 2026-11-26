@@ -47,7 +47,8 @@ data "aws_partition" "current" {}
 
 # ---------- Parâmetros da Lambda genérica: uma entrada por tabela da fonte ----------
 locals {
-  # tables.json é empacotado no zip: a Lambda descobre a tabela pelo eventSourceARN e lê o prefixo/partição daqui
+  # Gravado no atributo `configuracao` da tabela de parâmetros: a Lambda descobre a tabela pelo
+  # eventSourceARN e lê o prefixo/partição daí
   table_cfg = {
     for k, t in local.tables : t.table_name => {
       raw_prefix   = "dynamodb/${var.source_name}/${t.table_name}"
@@ -77,10 +78,6 @@ data "archive_file" "lambda" {
   source {
     content  = file("${path.module}/../../src/lambda/partitioning.py")
     filename = "partitioning.py"
-  }
-  source {
-    content  = jsonencode(local.table_cfg)
-    filename = "tables.json"
   }
 }
 
@@ -150,7 +147,7 @@ resource "aws_sns_topic_subscription" "email" {
   endpoint  = each.value
 }
 
-# ---------- Tabela de parâmetros: espelho de tables/*.yaml desta fonte ----------
+# ---------- Tabela de parâmetros: tables/*.yaml desta fonte, lida pela Lambda ----------
 resource "aws_dynamodb_table" "parametros" {
   name         = "${local.prefix}-parametros"
   billing_mode = "PAY_PER_REQUEST"
@@ -199,6 +196,7 @@ resource "aws_dynamodb_table_item" "parametros" {
   item = jsonencode({
     nome_tabela   = { S = each.value.table_name }
     contrato      = { S = local.contratos[each.key] }
+    configuracao  = { S = jsonencode(local.table_cfg[each.value.table_name]) } # o que a Lambda usa
     data_criacao  = { S = terraform_data.data_criacao[each.key].output }
     ultimo_update = { S = terraform_data.ultimo_update[each.key].output }
   })
@@ -265,6 +263,11 @@ data "aws_iam_policy_document" "writer" {
     resources = [local.cfg.datalake.raw_kms_key_arn]
   }
   statement {
+    sid       = "ReadParameters"
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.parametros.arn]
+  }
+  statement {
     sid       = "OnFailureDestinations"
     actions   = ["sqs:SendMessage"]
     resources = [aws_sqs_queue.on_failure.arn]
@@ -324,6 +327,7 @@ resource "aws_lambda_function" "writer" {
       SOURCE_NAME          = var.source_name
       LOG_LEVEL            = "INFO"
       ON_FAILURE_QUEUE_URL = aws_sqs_queue.on_failure.id
+      PARAMETERS_TABLE     = aws_dynamodb_table.parametros.name
     }
   }
 
@@ -332,7 +336,8 @@ resource "aws_lambda_function" "writer" {
     log_group  = aws_cloudwatch_log_group.writer.name
   }
 
-  depends_on = [aws_iam_role_policy.writer]
+  # os itens existem antes de o código (e os mapeamentos) começarem a ler os streams
+  depends_on = [aws_iam_role_policy.writer, aws_dynamodb_table_item.parametros]
 
   lifecycle {
     precondition {
@@ -520,7 +525,7 @@ output "on_failure_queue_url" {
 }
 
 output "parameters_table" {
-  description = "Tabela DynamoDB que espelha tables/*.yaml"
+  description = "Tabela DynamoDB de parâmetros (espelho de tables/*.yaml, lida pela Lambda)"
   value       = aws_dynamodb_table.parametros.name
 }
 
@@ -542,6 +547,6 @@ output "tables" {
 }
 
 output "tables_config" {
-  description = "Parâmetros (tables.json) enviados à Lambda genérica"
+  description = "Parâmetros gravados na tabela e usados pela Lambda genérica"
   value       = local.table_cfg
 }

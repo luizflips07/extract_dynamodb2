@@ -68,7 +68,7 @@ terraform init -backend-config="bucket=<BUCKET_STATE>" -backend-config="key=prod
 terraform apply -var="source_name=local"
 cd ../..
 ```
-Cria a **Lambda única** da fonte (`dynamodb-produtor-local-writer`, com role e log group; ela recebe a configuração de todas as tabelas em `tables.json`) e, para cada tabela, o ESM (lê o stream a partir de `TRIM_HORIZON`) e 2 alarmes. Cria também, uma vez por fonte, a fila SQS de falhas, o alarme dela e a tabela de parâmetros (`dynamodb-produtor-local-parametros`, um item por YAML). Tabela nova = só ESM, alarmes e item de parâmetros, mais a atualização do `tables.json` da mesma Lambda. Os outputs mostram função, role e, por tabela, ESM, prefixo RAW e alarmes (`terraform output tables`); a fila e a tabela de parâmetros saem em `on_failure_queue_url` e `parameters_table`.
+Cria a **Lambda única** da fonte (`dynamodb-produtor-local-writer`, com role e log group; ela lê a configuração de cada tabela na tabela de parâmetros) e, para cada tabela, o ESM (lê o stream a partir de `TRIM_HORIZON`) e 2 alarmes. Cria também, uma vez por fonte, a fila SQS de falhas, o alarme dela e a tabela de parâmetros (`dynamodb-produtor-local-parametros`, um item por YAML). Tabela nova = só ESM, alarmes, item de parâmetros e a permissão da role da mesma Lambda; o código não muda. Os outputs mostram função, role e, por tabela, ESM, prefixo RAW e alarmes (`terraform output tables`); a fila e a tabela de parâmetros saem em `on_failure_queue_url` e `parameters_table`.
 
 Para conferir os parâmetros:
 
