@@ -46,7 +46,7 @@ def test_success_writes_ndjson_gz():
     kw = s3.put_object.call_args.kwargs
     assert kw["ServerSideEncryption"] == "aws:kms"
     lines = gzip.decompress(kw["Body"]).decode().strip().split("\n")
-    assert [json.loads(l)["eventName"] for l in lines] == ["INSERT", "MODIFY"]
+    assert [json.loads(line)["eventName"] for line in lines] == ["INSERT", "MODIFY"]
 
 
 def test_failure_reports_first_sequence():
