@@ -3,7 +3,8 @@
 terraform {
   required_version = ">= 1.6"
   required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.60" }
+    aws      = { source = "hashicorp/aws", version = "~> 5.60" }
+    external = { source = "hashicorp/external", version = "~> 2.3" }
   }
   backend "s3" {}
 }
@@ -34,8 +35,14 @@ variable "state_bucket" {
 
 variable "create_oidc_provider" {
   type        = bool
-  default     = true
-  description = "false se a conta já tem o provedor token.actions.githubusercontent.com"
+  default     = null
+  description = "Vazio = detecta: cria o provedor se não existir, senão reaproveita. true/false força."
+}
+
+variable "python_command" {
+  type        = string
+  default     = "python"
+  description = "Executável do Python usado na detecção do provedor (no Linux/macOS: python3)"
 }
 
 locals {
@@ -65,7 +72,20 @@ locals {
 
   subject = var.github_subject_prefix != "" ? var.github_subject_prefix : "repo:${var.github_repository}"
 
-  provider_arn = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : "${local.arn}:iam::${local.account}:oidc-provider/token.actions.githubusercontent.com"
+  # O provedor é único por conta: a tag diz qual state o criou
+  oidc_owner   = "${var.state_bucket}/${var.github_repository}"
+  create_oidc  = var.create_oidc_provider != null ? var.create_oidc_provider : data.external.oidc_provider[0].result.create == "true"
+  provider_arn = local.create_oidc ? aws_iam_openid_connect_provider.github[0].arn : "${local.arn}:iam::${local.account}:oidc-provider/token.actions.githubusercontent.com"
+}
+
+# Só leitura: já existe o provedor do GitHub na conta? (exige AWS CLI e Python)
+data "external" "oidc_provider" {
+  count   = var.create_oidc_provider == null ? 1 : 0
+  program = [var.python_command, "${path.module}/find_oidc_provider.py"]
+  query = {
+    owner   = local.oidc_owner
+    project = local.project
+  }
 }
 
 provider "aws" {
@@ -79,10 +99,11 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 resource "aws_iam_openid_connect_provider" "github" {
-  count           = var.create_oidc_provider ? 1 : 0
+  count           = local.create_oidc ? 1 : 0
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"] # a AWS valida o certificado do GitHub por conta própria
+  tags            = { oidc-stack = local.oidc_owner }
 }
 
 # ---------- Quem pode assumir: só este repositório, na main ou nos environments do deploy ----------
@@ -319,6 +340,11 @@ resource "aws_iam_role_policy" "producer" {
   name     = "deploy"
   role     = aws_iam_role.producer[each.key].id
   policy   = data.aws_iam_policy_document.producer_all.json
+}
+
+output "oidc_provider" {
+  description = "Se o provedor OIDC é mantido por esta stack ou reaproveitado da conta"
+  value       = local.create_oidc ? "criado por esta stack" : "reaproveitado (já existia na conta)"
 }
 
 output "datalake_role_arn" {

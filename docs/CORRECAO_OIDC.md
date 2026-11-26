@@ -72,7 +72,7 @@ terraform init -reconfigure -backend-config="bucket=<BUCKET_STATE>" -backend-con
 terraform apply -var="github_repository=<dono>/<repositorio>" -var="state_bucket=<BUCKET_STATE>" -var="github_subject_prefix=repo:<dono>@<id>/<repositorio>@<id>"
 ```
 
-Sem subject imutável, omita `github_subject_prefix`. Se a conta já tiver o provedor OIDC do GitHub, acrescente `-var="create_oidc_provider=false"`.
+Sem subject imutável, omita `github_subject_prefix`. Se a conta já tiver o provedor OIDC do GitHub, a stack o reaproveita sozinha (ver [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md), 2.1).
 
 Numa correção, o plano deve mostrar só as roles alteradas (`0 to add, 2 to change, 0 to destroy`).
 

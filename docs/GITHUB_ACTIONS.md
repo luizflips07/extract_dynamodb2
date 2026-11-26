@@ -26,7 +26,7 @@ Comandos em PowerShell. Use uma cópia dos arquivos com `config.yaml` e `sources
 
 ### 2.1 Criar o provedor e as roles (na pasta `infra/github_oidc`)
 
-Precisa de credencial com permissão de IAM.
+Executada **somente à mão**. Precisa de credencial com permissão de IAM, AWS CLI e Python (no Linux/macOS, acrescente `-var="python_command=python3"`).
 
 Antes, veja se o repositório usa o *subject imutável* (padrão em repositórios novos), em que o `sub` do token inclui os IDs do dono e do repositório:
 
@@ -44,7 +44,9 @@ terraform init -backend-config="bucket=<BUCKET_STATE>" -backend-config="key=gith
 terraform apply -var="github_repository=<dono>/<repositorio>" -var="state_bucket=<BUCKET_STATE>"
 ```
 
-Se a conta já tiver o provedor `token.actions.githubusercontent.com`, acrescente `-var="create_oidc_provider=false"`. Com contas separadas, aplique em cada uma (outra `key` de state); só as roles daquela conta são criadas.
+**Provedor já existente:** a conta só aceita um provedor `token.actions.githubusercontent.com`. A stack verifica isso (`find_oidc_provider.py`): se ele não existe, cria; se existe e não é dela, reaproveita e cria só as roles. A saída `oidc_provider` mostra o que aconteceu. O provedor criado pela stack leva a tag `oidc-stack`; um `terraform destroy` dela o apaga, mesmo que outros repositórios o estejam usando. `-var="create_oidc_provider=true"` ou `false` desliga a detecção.
+
+A detecção vale para o provedor, não para as roles: se já houver uma role `gha-<project>-*` com o mesmo nome fora deste state, o `apply` falha. Com contas separadas, aplique em cada uma (outra `key` de state); só as roles daquela conta são criadas.
 
 ### 2.2 Instalar e autenticar a GitHub CLI
 
