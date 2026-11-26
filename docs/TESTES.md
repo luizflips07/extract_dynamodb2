@@ -135,5 +135,6 @@ terraform plan -var="source_name=local"
 ## 5. Não coberto
 
 - Mensagem de **lote descartado** enviada pela própria AWS (exige esgotar 5 retries ou 24 h num stream real).
-- Execução do `deploy.yml` no GitHub Actions.
+- Execução do `deploy.yml` no GitHub Actions (resultado do teste manual em [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)).
 - Consulta à view Trusted (ver `exe_manual.MD`).
+- Automação de clone por issue (só a leitura do formulário tem teste unitário).

@@ -3,6 +3,7 @@
 Exemplo validado na AWS com a tabela nova **`faturamento`** (4 colunas: `fatura_id`, `cliente_id`, `valor`, `data_emissao`).
 Região `us-east-1`. Todos os comandos partem da **raiz do repositório**, com credenciais da conta produtora (`aws configure`).
 Valores de conta/bucket: ver [docs/VARIAVEIS.md](docs/VARIAVEIS.md).
+Para fazer o deploy pelo GitHub Actions em vez destes passos: [docs/GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md).
 
 ## 0. Pré-requisitos (uma vez)
 ```bash

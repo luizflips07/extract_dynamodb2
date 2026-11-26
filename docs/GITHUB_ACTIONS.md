@@ -28,6 +28,14 @@ Comandos em PowerShell. Use uma cópia dos arquivos com `config.yaml` e `sources
 
 Precisa de credencial com permissão de IAM.
 
+Antes, veja se o repositório usa o *subject imutável* (padrão em repositórios novos), em que o `sub` do token inclui os IDs do dono e do repositório:
+
+```powershell
+gh api repos/<dono>/<repositorio>/actions/oidc/customization/sub
+```
+
+Se `use_immutable_subject` for `true`, acrescente ao `apply` abaixo `-var="github_subject_prefix=<valor de sub_claim_prefix>"`.
+
 ```powershell
 terraform init -backend-config="bucket=<BUCKET_STATE>" -backend-config="key=github-oidc/oidc.tfstate" -backend-config="region=us-east-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
 ```
@@ -73,11 +81,29 @@ A chave KMS do bucket RAW não é secret: o job `datalake` cria a CMK e passa o 
 
 O job `datalake` espera a sua aprovação (*Review deployments*).
 
-## 4. Problemas comuns
+## 4. Teste realizado (25/11/2026)
+
+Ambiente recriado do zero (Data Lake e producer apagados; 5 tabelas do `mock/` recriadas e carregadas) e `deploy` manual:
+
+| Etapa | Resultado |
+|---|---|
+| `test` | Passou |
+| `datalake` | 35 recursos criados |
+| `producer (local)` | 47 recursos criados e export das 5 tabelas concluído |
+| `load` | Snapshot na RAW e views Trusted recriadas |
+| Contagens na Trusted | clientes 500, produtos 100, estoque 100, vendas 100.000, faturamento 200 |
+| `MODIFY` e `REMOVE` em `faturamento` | Refletidos na Trusted em cerca de 5 min |
+| Testes de integração (`docs/TESTES.md`) | 5 de 5 passaram |
+
+Não foi testado: o disparo automático por mudança em `tables/*.yaml`, a recriação de tabela com formato alterado e mais de uma conta.
+
+**O que fica visível nos logs** (repositório público): conta, bucket RAW, e-mail e ARNs aparecem mascarados (`***`); o nome do bucket de state, que é uma variável, aparece. Cadastre-o como secret se isso importar. O GitHub também avisa que as actions usadas miram o Node.js 20, já obsoleto: atualize as versões quando possível.
+
+## 5. Problemas comuns
 
 | Erro | Causa provável |
 |---|---|
-| `Not authorized to perform sts:AssumeRoleWithWebIdentity` | Repositório, environment ou branch diferentes do `sub` da role. Compare com a condição `token.actions.githubusercontent.com:sub` da role |
+| `Not authorized to perform sts:AssumeRoleWithWebIdentity` | O `sub` do token não bate com a role: subject imutável sem `github_subject_prefix` (passo 2.1), ou outro repositório, environment ou branch. O `sub` recebido aparece no CloudTrail, evento `AssumeRoleWithWebIdentity`, campo `userIdentity.userName`. Passo a passo em [CORRECAO_OIDC.md](CORRECAO_OIDC.md) |
 | `valores de exemplo sem secret correspondente` | Secret não cadastrado |
 | `AccessDenied` no `terraform apply` | Falta uma ação na role: ajuste `infra/github_oidc/main.tf` e reaplique à mão |
 | Job parado em *Waiting* | Aprovação do `datalake-prod` |

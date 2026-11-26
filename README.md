@@ -108,7 +108,7 @@ SELECT count(*) FROM trusted.local_clientes WHERE id = 'E2E-1';                 
 
 ## CI/CD (GitHub Actions)
 - `validate.yml` (PR): ruff, pytest, geração de DDL, `terraform fmt/validate` e checkov.
-- `deploy.yml`: roda **somente** quando `tables/*.yaml` muda (arquivo novo, alterado ou removido) ou manualmente (`workflow_dispatch`). Para cada tabela compara `partition_by` + `keys` + `columns` com a tabela Glue existente: **igual → nada a fazer; diferente (ou nova) → a tabela Glue é apagada/recriada no formato novo e recarregada** (export + snapshot + partições + view Trusted). Dados no S3 não são apagados. Fluxo: testes → datalake (`datalake-prod`, aprovação) → producer por fonte (`producer-<fonte>`) → load. Faça o primeiro apply do datalake à mão (passo 1) para obter o ARN da CMK e versioná-lo no `config.yaml`. Detalhes: `docs/DOCUMENTACAO.md` §15.
+- `deploy.yml`: roda **somente** quando `tables/*.yaml` muda (arquivo novo, alterado ou removido) ou manualmente (`workflow_dispatch`), sempre na `main`. Para cada tabela compara `partition_by` + `keys` + `columns` com a tabela Glue existente: **igual → nada a fazer; diferente (ou nova) → a tabela Glue é apagada/recriada no formato novo e recarregada** (export + snapshot + partições + view Trusted). Dados no S3 não são apagados. Fluxo: testes → datalake (`datalake-prod`, aprovação) → producer por fonte (`producer-<fonte>`) → load. Funciona numa conta vazia: não é preciso aplicar nada à mão antes, além da conexão OIDC e da configuração do repositório ([docs/GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md)).
 
 ## Garantias e limites
 - Entrega **at-least-once**; ordem **por chave** dentro do shard (sem ordem global). A Trusted deduplica por chave + `SequenceNumber`; o snapshot (seq 0) perde para qualquer evento real.
@@ -120,7 +120,7 @@ SELECT count(*) FROM trusted.local_clientes WHERE id = 'E2E-1';                 
 ```bash
 pytest -q    # Lambda, gerador de DDL, carga do snapshot e gerador do mock
 ```
-Não faz parte dos testes: `terraform plan/apply`, checkov e as consultas Athena (validados manualmente neste ambiente).
+Testes de integração na AWS e como executá-los: [docs/TESTES.md](docs/TESTES.md). O `checkov` do `validate.yml` não foi validado.
 
 ## Mapeamento Well-Architected
 | Pilar | Práticas |

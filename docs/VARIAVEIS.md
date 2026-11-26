@@ -135,13 +135,13 @@ Não é usado em produção; só se for recriar os dados de exemplo na nova cont
 ## 8. Pré-requisitos a criar na nova conta (fora do repositório)
 
 1. **Bucket de state** (`TFSTATE_BUCKET`) na região do projeto.
-2. **Provedor OIDC do GitHub** (`token.actions.githubusercontent.com`) e **roles de deploy** (uma no Data Lake, uma por conta produtora) confiando no repositório, com permissão para criar os recursos e acessar o bucket de state.
+2. **Provedor OIDC do GitHub** e **roles de deploy**: criados por `infra/github_oidc` ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)).
 3. **Tabelas DynamoDB** com Streams `NEW_AND_OLD_IMAGES` e PITR (para testes, `mock/` cria).
 
 ## 9. Checklist de migração (ordem)
 
 1. Editar `config.yaml`: `region`, `datalake.account_id`, `datalake.raw_bucket`, `alarms.notification_emails`, tags (e `project`/`environment`, se quiser).
 2. Editar/criar `sources/<fonte>.yaml` (`name`, `account_id`) e `tables/<tabela>.yaml` (`source`, `table_name`, `keys`, `columns`, `partition_by` se quiser).
-3. Criar os pré-requisitos da seção 8 e cadastrar as variáveis do GitHub (seção 4).
-4. Aplicar `infra/datalake` à mão (1ª vez) e copiar `raw_kms_key_arn` para `config.yaml`.
-5. Demais passos (carga inicial, `infra/producer`, views): ver `README.md`.
+3. Criar os pré-requisitos da seção 8 e cadastrar variáveis e secrets no GitHub (`scripts/setup_github.ps1`).
+4. Pelo GitHub Actions: disparar o `deploy`. Os passos 1 e 2 podem ser feitos numa cópia local só para o `setup_github.ps1`, sem commitar valores reais.
+5. À mão (sem Actions): aplicar `infra/datalake`, copiar `raw_kms_key_arn` para `config.yaml` e seguir o `README.md`.

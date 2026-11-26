@@ -88,7 +88,7 @@ Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte lib
 
 ## 7. CI/CD
 - **validate.yml (PR):** ruff, pytest (inclui validação de schema de todas as tabelas), geração de DDL, `terraform fmt/validate` e checkov nas duas stacks.
-- **deploy.yml (main):** testes e descoberta das fontes → apply **datalake** (environment `datalake-prod`) → apply **producer em matriz, uma execução por fonte** (environment `producer-<fonte>`). OIDC, state remoto S3 com lock/criptografia.
+- **deploy.yml (main):** testes e descoberta das fontes → apply **datalake** (environment `datalake-prod`, com aprovação) → apply **producer em matriz, uma execução por fonte** (environment `producer-<fonte>`) e export das tabelas novas/alteradas → **load** (snapshot, partições e views). Credenciais por OIDC; state remoto S3 com lock e criptografia. O id da CMK criada no datalake é passado aos jobs seguintes, então o primeiro deploy funciona numa conta vazia.
 - Configuração (roles OIDC, environments, variáveis e secrets): [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md). Os valores reais vêm de secrets; o repositório guarda só exemplos.
 
 ## 8. Procedimentos
@@ -102,7 +102,9 @@ Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte lib
 1. Criar `sources/<fonte>.yaml`; criar o environment `producer-<fonte>` no GitHub com a role OIDC da conta.
 2. Criar as `tables/*.yaml` apontando para `source: <fonte>`.
 
-**Implantação inicial:** ajustar `TODO` de `config.yaml`/`sources`; aplicar datalake, copiar `raw_kms_key_arn` para `config.yaml`; aplicar producer. Se a policy acusar principal inexistente (role ainda não criada), aplicar a producer e reaplicar a datalake.
+**Implantação inicial pelo GitHub Actions:** conectar o OIDC e configurar o repositório ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)), ter as tabelas de origem criadas e disparar o `deploy`.
+
+**Implantação inicial à mão:** ajustar `TODO` de `config.yaml`/`sources`; aplicar datalake, copiar `raw_kms_key_arn` para `config.yaml`; aplicar producer. Se a policy acusar principal inexistente (role ainda não criada), aplicar a producer e reaplicar a datalake.
 
 ## 9. Operação
 - Latência: janela de batching (60–300 s) + invocação.
@@ -127,12 +129,15 @@ Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte lib
 | Custos | Streams gratuito, poucos PUTs, arm64, lifecycle, retenção de logs |
 | Sustentabilidade | Serverless, Graviton, compressão, tiering |
 
-## 12. Status de validação
+## 12. Status de validação (25/11/2026)
 | Item | Resultado |
 |---|---|
-| pytest (Lambda + gerador de DDL) | 8/8 passando |
-| `terraform fmt -check` / `validate` (producer e datalake) | OK |
-| `terraform plan/apply`, checkov, ruff, execução das views no Athena, teste ponta a ponta | Não executados |
+| `pytest` | 57 passando; 5 de integração pulados por padrão |
+| Testes de integração na AWS ([TESTES.md](TESTES.md)) | 5/5 passando |
+| `deploy.yml` numa conta sem o pipeline | Passou ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)) |
+| Views Trusted no Athena (contagens, `MODIFY`, `REMOVE`) | OK |
+| `validate.yml` (ruff, checkov) | Não validado; o `ruff` recente acusa erros no código atual |
+| Disparo por mudança em `tables/`, recriação por formato alterado, múltiplas contas, clone por issue | Não testados |
 
 ## 13. Carga inicial no RAW (snapshot)
 1. `python scripts/initial_load.py --all --source local` exporta cada tabela (PITR) para `dynamodb/<fonte>/<tabela>-initial/` (DynamoDB JSON; a tabela Glue **não** lê esse prefixo).
@@ -156,5 +161,5 @@ Notas de implementação descobertas no teste ponta a ponta:
 - **Job `datalake`:** `table_sync.py plan` compara cada YAML com a tabela Glue → `new` / `changed` / `unchanged`; depois `terraform apply`. **Igual → nada é feito.** **Diferente → a tabela Glue é apagada e recriada** (`terraform_data` + `replace_triggered_by`). Os arquivos do S3 **não são apagados**.
 - **Job `producer`** (por fonte): `terraform apply` e, só para tabelas `new`/`changed` da fonte, `initial_load.py --wait` (export PITR).
 - **Job `load`:** só para `new`/`changed`: `load_initial_to_raw.py` (snapshot), `MSCK REPAIR TABLE` (se `partition_by`) e recriação da view Trusted.
-- **Remover um `tables/<t>.yaml`** faz o Terraform destruir ESM, fila, alarmes e tabela Glue dessa tabela (a Lambda única é atualizada sem ela) (dados no S3 permanecem).
+- **Remover um `tables/<t>.yaml`** faz o Terraform destruir ESM, alarmes, item de parâmetros e tabela Glue dessa tabela; a Lambda única e a fila continuam (dados no S3 permanecem).
 - **Snapshots repetidos:** como cada recriação gera um novo export, a Trusted desempata `SNAPSHOT`s pela data do export (`approximatecreationdatetime`); eventos reais do CDC sempre prevalecem (sequência > 0).

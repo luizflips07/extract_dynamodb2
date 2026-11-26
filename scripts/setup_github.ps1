@@ -31,8 +31,13 @@ $environments = @("datalake-prod") + @($ProducerRoleArns.Keys | ForEach-Object {
 foreach ($name in $environments) {
     $body = @{ deployment_branch_policy = @{ protected_branches = $false; custom_branch_policies = $true } }
     if ($name -eq "datalake-prod") { $body.reviewers = @(@{ type = "User"; id = $me }) }
-    $body | ConvertTo-Json -Depth 5 -Compress | & gh api --method PUT "repos/$Repo/environments/$name" --input - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "falhou ao criar o environment $name" }
+    # Por arquivo ASCII: o pipe do PowerShell 5.1 pode acrescentar BOM e o GitHub recusa o JSON
+    $json = New-TemporaryFile
+    $body | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path $json -Encoding ascii
+    & gh api --method PUT "repos/$Repo/environments/$name" --input $json.FullName | Out-Null
+    $code = $LASTEXITCODE
+    Remove-Item $json
+    if ($code -ne 0) { throw "falhou ao criar o environment $name" }
     $policies = & gh api "repos/$Repo/environments/$name/deployment-branch-policies" | ConvertFrom-Json
     if ($policies.branch_policies.name -notcontains "main") {
         Invoke-Gh api --method POST "repos/$Repo/environments/$name/deployment-branch-policies" -f name=main | Out-Null

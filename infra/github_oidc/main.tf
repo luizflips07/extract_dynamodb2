@@ -17,6 +17,16 @@ variable "github_repository" {
   }
 }
 
+variable "github_subject_prefix" {
+  type        = string
+  default     = ""
+  description = "Início do `sub` do token quando o repositório usa subject imutável (com IDs). Vazio = repo:<dono>/<repositorio>"
+  validation {
+    condition     = var.github_subject_prefix == "" || can(regex("^repo:[A-Za-z0-9_.-]+@[0-9]+/[A-Za-z0-9_.-]+@[0-9]+$", var.github_subject_prefix))
+    error_message = "Use repo:<dono>@<id>/<repositorio>@<id> (sem curingas)."
+  }
+}
+
 variable "state_bucket" {
   type        = string
   description = "Bucket do state do Terraform (o mesmo de TFSTATE_BUCKET)"
@@ -52,6 +62,8 @@ locals {
 
   # Prefixo "gha-" de propósito: fica FORA do padrão <project>-* que as próprias roles podem alterar
   datalake_role = "gha-${local.project}-datalake"
+
+  subject = var.github_subject_prefix != "" ? var.github_subject_prefix : "repo:${var.github_repository}"
 
   provider_arn = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : "${local.arn}:iam::${local.account}:oidc-provider/token.actions.githubusercontent.com"
 }
@@ -95,7 +107,7 @@ data "aws_iam_policy_document" "trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [for s in each.value : "repo:${var.github_repository}:${s}"]
+      values   = [for s in each.value : "${local.subject}:${s}"]
     }
   }
 }
