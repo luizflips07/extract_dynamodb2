@@ -80,7 +80,7 @@ Para corrigir um pedido, **abra outra issue**: editar não dispara a automação
 O repositório novo nasce com o GitHub Actions desligado. Para fazer o primeiro deploy:
 
 1. Conferir `tables/*.yaml` e o e-mail em `config.yaml` (`alarms.notification_emails`).
-2. Criar o bucket de state e ter as tabelas DynamoDB com Streams e PITR.
+2. Criar o bucket de state e ter as tabelas DynamoDB com Streams, PITR e a tag `project=<project da cópia>`.
 3. Conectar o OIDC ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)). O novo repositório tem IDs próprios: ver [CORRECAO_OIDC.md](CORRECAO_OIDC.md).
 4. Configurar o repositório com `scripts/setup_github.ps1` (a variável `AWS_REGION` deve ser a região informada).
 5. Na mesma conta AWS do original, definir também `datalake.glue_database` e `datalake.trusted_database`.

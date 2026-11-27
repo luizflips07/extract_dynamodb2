@@ -44,7 +44,7 @@ O valor aceito precisa ser **idêntico** ao do passo 3:
 
 | Role | `sub` esperado |
 |---|---|
-| datalake | `<prefixo>:environment:datalake-prod` e `<prefixo>:ref:refs/heads/main` |
+| datalake | `<prefixo>:environment:datalake-prod` |
 | producer | `<prefixo>:environment:producer-<fonte>` |
 
 `<prefixo>` é o `sub_claim_prefix` do passo 2, ou `repo:<dono>/<repositorio>` se o subject não for imutável.
@@ -74,7 +74,7 @@ terraform apply -var="github_repository=<dono>/<repositorio>" -var="state_bucket
 
 Sem subject imutável, omita `github_subject_prefix`. Se a conta já tiver o provedor OIDC do GitHub, a stack o reaproveita sozinha (ver [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md), 2.1).
 
-Numa correção, o plano deve mostrar só as roles alteradas (`0 to add, 2 to change, 0 to destroy`).
+Numa correção só do `sub`, o plano deve mostrar apenas as roles alteradas (`0 to add, 2 to change, 0 to destroy`).
 
 ### 5B. Pelo console da AWS
 
@@ -147,7 +147,7 @@ Aprove o `datalake-prod` na aba *Actions*. A etapa `configure-aws-credentials` p
 
 | Verifique | Detalhe |
 |---|---|
-| Branch | As roles só aceitam a `main` e os environments |
+| Environment | As roles só aceitam os environments, e eles só aceitam a `main` |
 | Nome do environment | `datalake-prod` e `producer-<fonte>`, com a mesma grafia |
 | Provedor OIDC | `aws iam list-open-id-connect-providers` deve listar `token.actions.githubusercontent.com`, com audiência `sts.amazonaws.com` |
 | `project` | O nome da role usa o `project` do `config.yaml` |
@@ -167,9 +167,103 @@ Cópia genérica do que `infra/github_oidc` cria, para conferência ou criação
 | `<BUCKET_STATE>` | bucket do state do Terraform |
 | `<dono>`, `<repositorio>`, `<id-...>` | do `sub_claim_prefix` (passo 2) |
 
-Os bancos Glue aparecem como `raw` e `trusted`; troque se o `config.yaml` usar outros.
+Os bancos Glue aparecem como `raw` e `trusted`, e o `tfstate_prefix` vazio; troque se o `config.yaml` usar outros.
 
-Pelo console: crie a role com a relação de confiança (5C) e depois **Adicionar permissões → Criar política em linha → JSON**.
+Pelo console: crie primeiro a política gerenciada `gha-<project>-boundary`; depois a role com a relação de confiança (5C) e **Adicionar permissões → Criar política em linha → JSON**.
+
+### Boundary: `gha-<project>-boundary`
+
+Política gerenciada. Não é anexada às roles de deploy: é o teto das roles que elas criam.
+
+```json
+{
+  "Statement": [
+    {
+      "Action": [
+        "dynamodb:ListStreams",
+        "dynamodb:GetShardIterator",
+        "dynamodb:GetRecords",
+        "dynamodb:DescribeStream"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:dynamodb:<REGIAO>:<CONTA>:table/*/stream/*",
+      "Sid": "ReadStreams"
+    },
+    {
+      "Action": "dynamodb:GetItem",
+      "Effect": "Allow",
+      "Resource": "arn:aws:dynamodb:<REGIAO>:<CONTA>:table/<project>-*",
+      "Sid": "ReadParameters"
+    },
+    {
+      "Action": "s3:PutObject",
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<BUCKET_RAW>/dynamodb/*",
+      "Sid": "WriteRaw"
+    },
+    {
+      "Action": [
+        "kms:GenerateDataKey",
+        "kms:Encrypt",
+        "kms:DescribeKey"
+      ],
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "EncryptOnly"
+    },
+    {
+      "Action": "kms:Decrypt",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/project": "<project>"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:kms:*:*:key/*",
+      "Sid": "DecryptProjectKeys"
+    },
+    {
+      "Action": "sqs:SendMessage",
+      "Effect": "Allow",
+      "Resource": "arn:aws:sqs:<REGIAO>:<CONTA>:<project>-*",
+      "Sid": "OnFailureQueue"
+    },
+    {
+      "Action": [
+        "logs:PutLogEvents",
+        "logs:CreateLogStream"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:logs:<REGIAO>:<CONTA>:log-group:/aws/lambda/<project>-*",
+      "Sid": "WriteLogs"
+    },
+    {
+      "Action": [
+        "xray:PutTraceSegments",
+        "xray:PutTelemetryRecords"
+      ],
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "XRay"
+    },
+    {
+      "Action": [
+        "glue:GetTable",
+        "glue:CreatePartition",
+        "glue:BatchCreatePartition"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:glue:<REGIAO>:<CONTA>:table/raw/*",
+        "arn:aws:glue:<REGIAO>:<CONTA>:database/raw",
+        "arn:aws:glue:<REGIAO>:<CONTA>:catalog"
+      ],
+      "Sid": "RegisterPartitions"
+    }
+  ],
+  "Version": "2012-10-17"
+}
+```
 
 ### Role do Data Lake: `gha-<project>-datalake`
 
@@ -187,11 +281,8 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringEquals": {
-          "token.actions.githubusercontent.com:sub": [
-            "repo:<dono>@<id-do-dono>/<repositorio>@<id-do-repositorio>:environment:datalake-prod",
-            "repo:<dono>@<id-do-dono>/<repositorio>@<id-do-repositorio>:ref:refs/heads/main"
-          ],
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:<dono>@<id-do-dono>/<repositorio>@<id-do-repositorio>:environment:datalake-prod"
         }
       }
     }
@@ -217,23 +308,38 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
     {
       "Action": [
         "s3:PutObject",
+        "s3:GetObject"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<BUCKET_STATE>/datalake/raw.tfstate",
+      "Sid": "StateObject"
+    },
+    {
+      "Action": [
+        "s3:PutObject",
         "s3:GetObject",
         "s3:DeleteObject"
       ],
       "Effect": "Allow",
-      "Resource": "arn:aws:s3:::<BUCKET_STATE>/*",
-      "Sid": "StateObjects"
+      "Resource": "arn:aws:s3:::<BUCKET_STATE>/datalake/raw.tfstate.tflock",
+      "Sid": "StateLock"
     },
     {
-      "Action": [
-        "kms:TagResource",
-        "kms:ListKeys",
-        "kms:ListAliases",
-        "kms:CreateKey"
-      ],
+      "Action": "kms:CreateKey",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/project": "<project>"
+        }
+      },
       "Effect": "Allow",
       "Resource": "*",
-      "Sid": "KmsCreateAndList"
+      "Sid": "KmsCreateTagged"
+    },
+    {
+      "Action": "kms:ListAliases",
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "KmsList"
     },
     {
       "Action": [
@@ -243,13 +349,37 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
       ],
       "Effect": "Allow",
       "Resource": [
-        "arn:aws:kms:<REGIAO>:<CONTA>:key/*",
-        "arn:aws:kms:<REGIAO>:<CONTA>:alias/*"
+        "arn:aws:kms:<REGIAO>:<CONTA>:alias/<BUCKET_RAW>",
+        "arn:aws:kms:<REGIAO>:<CONTA>:alias/<project>-*"
       ],
       "Sid": "KmsAliases"
     },
     {
-      "Action": "kms:*",
+      "Action": [
+        "kms:UpdateKeyDescription",
+        "kms:UpdateAlias",
+        "kms:UntagResource",
+        "kms:TagResource",
+        "kms:ScheduleKeyDeletion",
+        "kms:RetireGrant",
+        "kms:ReEncryptTo",
+        "kms:ReEncryptFrom",
+        "kms:PutKeyPolicy",
+        "kms:ListResourceTags",
+        "kms:ListGrants",
+        "kms:GetKeyRotationStatus",
+        "kms:GetKeyPolicy",
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:GenerateDataKey",
+        "kms:Encrypt",
+        "kms:EnableKeyRotation",
+        "kms:EnableKey",
+        "kms:DescribeKey",
+        "kms:DeleteAlias",
+        "kms:Decrypt",
+        "kms:CreateGrant",
+        "kms:CreateAlias"
+      ],
       "Condition": {
         "StringEquals": {
           "aws:ResourceTag/project": "<project>"
@@ -261,19 +391,32 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
     },
     {
       "Action": [
-        "iam:UpdateRole",
         "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePolicy",
+        "iam:CreateRole"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::<CONTA>:policy/gha-<project>-boundary"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:iam::<CONTA>:role/<project>-*",
+      "Sid": "ProjectRolesWithBoundary"
+    },
+    {
+      "Action": [
+        "iam:UpdateRole",
         "iam:UntagRole",
         "iam:TagRole",
-        "iam:PutRolePolicy",
         "iam:ListRolePolicies",
         "iam:ListInstanceProfilesForRole",
         "iam:ListAttachedRolePolicies",
         "iam:GetRolePolicy",
         "iam:GetRole",
-        "iam:DeleteRolePolicy",
-        "iam:DeleteRole",
-        "iam:CreateRole"
+        "iam:DeleteRole"
       ],
       "Effect": "Allow",
       "Resource": "arn:aws:iam::<CONTA>:role/<project>-*",
@@ -291,13 +434,40 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
       "Sid": "PassOnlyToLambda"
     },
     {
-      "Action": "lambda:*",
+      "Action": [
+        "lambda:UpdateFunctionConfiguration",
+        "lambda:UpdateFunctionCode",
+        "lambda:UntagResource",
+        "lambda:TagResource",
+        "lambda:PutFunctionConcurrency",
+        "lambda:ListVersionsByFunction",
+        "lambda:ListTags",
+        "lambda:GetFunctionConfiguration",
+        "lambda:GetFunctionCodeSigningConfig",
+        "lambda:GetFunction",
+        "lambda:DeleteFunctionConcurrency",
+        "lambda:DeleteFunction",
+        "lambda:CreateFunction"
+      ],
       "Effect": "Allow",
       "Resource": "arn:aws:lambda:<REGIAO>:<CONTA>:function:<project>-*",
       "Sid": "Lambda"
     },
     {
-      "Action": "logs:*",
+      "Action": [
+        "logs:UntagResource",
+        "logs:UntagLogGroup",
+        "logs:TagResource",
+        "logs:TagLogGroup",
+        "logs:PutRetentionPolicy",
+        "logs:ListTagsLogGroup",
+        "logs:ListTagsForResource",
+        "logs:DisassociateKmsKey",
+        "logs:DeleteRetentionPolicy",
+        "logs:DeleteLogGroup",
+        "logs:CreateLogGroup",
+        "logs:AssociateKmsKey"
+      ],
       "Effect": "Allow",
       "Resource": "arn:aws:logs:<REGIAO>:<CONTA>:log-group:/aws/lambda/<project>-*",
       "Sid": "Logs"
@@ -309,18 +479,70 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
       "Sid": "LogsList"
     },
     {
-      "Action": "s3:*",
+      "Action": [
+        "s3:PutLifecycleConfiguration",
+        "s3:PutEncryptionConfiguration",
+        "s3:PutBucketVersioning",
+        "s3:PutBucketTagging",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutBucketPolicy",
+        "s3:PutBucketOwnershipControls",
+        "s3:PutBucketNotification",
+        "s3:PutBucketLogging",
+        "s3:ListBucketMultipartUploads",
+        "s3:ListBucket",
+        "s3:GetReplicationConfiguration",
+        "s3:GetLifecycleConfiguration",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetBucket*",
+        "s3:GetAccelerateConfiguration",
+        "s3:DeleteBucketPolicy",
+        "s3:DeleteBucket",
+        "s3:CreateBucket"
+      ],
       "Effect": "Allow",
       "Resource": [
-        "arn:aws:s3:::<BUCKET_RAW>/*",
-        "arn:aws:s3:::<BUCKET_RAW>-access-logs/*",
         "arn:aws:s3:::<BUCKET_RAW>-access-logs",
         "arn:aws:s3:::<BUCKET_RAW>"
       ],
       "Sid": "RawAndLogsBuckets"
     },
     {
-      "Action": "glue:*",
+      "Action": [
+        "s3:PutObject",
+        "s3:ListMultipartUploadParts",
+        "s3:GetObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::<BUCKET_RAW>/*",
+        "arn:aws:s3:::<BUCKET_RAW>-access-logs/*"
+      ],
+      "Sid": "RawAndLogsObjects"
+    },
+    {
+      "Action": [
+        "glue:UpdateTable",
+        "glue:UpdateDatabase",
+        "glue:UntagResource",
+        "glue:TagResource",
+        "glue:GetTags",
+        "glue:GetTables",
+        "glue:GetTableVersions",
+        "glue:GetTable",
+        "glue:GetPartitions",
+        "glue:GetPartitionIndexes",
+        "glue:GetPartition",
+        "glue:GetDatabase",
+        "glue:DeleteTable",
+        "glue:DeleteDatabase",
+        "glue:CreateTable",
+        "glue:CreatePartition",
+        "glue:CreateDatabase",
+        "glue:BatchGetPartition",
+        "glue:BatchCreatePartition"
+      ],
       "Effect": "Allow",
       "Resource": [
         "arn:aws:glue:<REGIAO>:<CONTA>:table/trusted/*",
@@ -343,10 +565,40 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
       "Sid": "AthenaViewsAndRepair"
     },
     {
-      "Action": "events:*",
+      "Action": [
+        "events:UntagResource",
+        "events:TagResource",
+        "events:RemoveTargets",
+        "events:PutTargets",
+        "events:PutRule",
+        "events:ListTargetsByRule",
+        "events:ListTagsForResource",
+        "events:DescribeRule",
+        "events:DeleteRule"
+      ],
       "Effect": "Allow",
       "Resource": "arn:aws:events:<REGIAO>:<CONTA>:rule/<project>-*",
       "Sid": "PartitionRegistrarRule"
+    },
+    {
+      "Action": [
+        "lambda:RemovePermission",
+        "lambda:GetPolicy"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:lambda:<REGIAO>:<CONTA>:function:<project>-*",
+      "Sid": "RegistrarPermissionRead"
+    },
+    {
+      "Action": "lambda:AddPermission",
+      "Condition": {
+        "StringEquals": {
+          "lambda:Principal": "events.amazonaws.com"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:lambda:<REGIAO>:<CONTA>:function:<project>-*",
+      "Sid": "RegistrarInvokedOnlyByEventBridge"
     }
   ]
 }
@@ -395,23 +647,38 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
     {
       "Action": [
         "s3:PutObject",
+        "s3:GetObject"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<BUCKET_STATE>/producer/<fonte>.tfstate",
+      "Sid": "StateObject"
+    },
+    {
+      "Action": [
+        "s3:PutObject",
         "s3:GetObject",
         "s3:DeleteObject"
       ],
       "Effect": "Allow",
-      "Resource": "arn:aws:s3:::<BUCKET_STATE>/*",
-      "Sid": "StateObjects"
+      "Resource": "arn:aws:s3:::<BUCKET_STATE>/producer/<fonte>.tfstate.tflock",
+      "Sid": "StateLock"
     },
     {
-      "Action": [
-        "kms:TagResource",
-        "kms:ListKeys",
-        "kms:ListAliases",
-        "kms:CreateKey"
-      ],
+      "Action": "kms:CreateKey",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/project": "<project>"
+        }
+      },
       "Effect": "Allow",
       "Resource": "*",
-      "Sid": "KmsCreateAndList"
+      "Sid": "KmsCreateTagged"
+    },
+    {
+      "Action": "kms:ListAliases",
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "KmsList"
     },
     {
       "Action": [
@@ -421,13 +688,37 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
       ],
       "Effect": "Allow",
       "Resource": [
-        "arn:aws:kms:<REGIAO>:<CONTA>:key/*",
-        "arn:aws:kms:<REGIAO>:<CONTA>:alias/*"
+        "arn:aws:kms:<REGIAO>:<CONTA>:alias/<BUCKET_RAW>",
+        "arn:aws:kms:<REGIAO>:<CONTA>:alias/<project>-*"
       ],
       "Sid": "KmsAliases"
     },
     {
-      "Action": "kms:*",
+      "Action": [
+        "kms:UpdateKeyDescription",
+        "kms:UpdateAlias",
+        "kms:UntagResource",
+        "kms:TagResource",
+        "kms:ScheduleKeyDeletion",
+        "kms:RetireGrant",
+        "kms:ReEncryptTo",
+        "kms:ReEncryptFrom",
+        "kms:PutKeyPolicy",
+        "kms:ListResourceTags",
+        "kms:ListGrants",
+        "kms:GetKeyRotationStatus",
+        "kms:GetKeyPolicy",
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:GenerateDataKey",
+        "kms:Encrypt",
+        "kms:EnableKeyRotation",
+        "kms:EnableKey",
+        "kms:DescribeKey",
+        "kms:DeleteAlias",
+        "kms:Decrypt",
+        "kms:CreateGrant",
+        "kms:CreateAlias"
+      ],
       "Condition": {
         "StringEquals": {
           "aws:ResourceTag/project": "<project>"
@@ -439,19 +730,32 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
     },
     {
       "Action": [
-        "iam:UpdateRole",
         "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePolicy",
+        "iam:CreateRole"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::<CONTA>:policy/gha-<project>-boundary"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:iam::<CONTA>:role/<project>-*",
+      "Sid": "ProjectRolesWithBoundary"
+    },
+    {
+      "Action": [
+        "iam:UpdateRole",
         "iam:UntagRole",
         "iam:TagRole",
-        "iam:PutRolePolicy",
         "iam:ListRolePolicies",
         "iam:ListInstanceProfilesForRole",
         "iam:ListAttachedRolePolicies",
         "iam:GetRolePolicy",
         "iam:GetRole",
-        "iam:DeleteRolePolicy",
-        "iam:DeleteRole",
-        "iam:CreateRole"
+        "iam:DeleteRole"
       ],
       "Effect": "Allow",
       "Resource": "arn:aws:iam::<CONTA>:role/<project>-*",
@@ -469,13 +773,40 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
       "Sid": "PassOnlyToLambda"
     },
     {
-      "Action": "lambda:*",
+      "Action": [
+        "lambda:UpdateFunctionConfiguration",
+        "lambda:UpdateFunctionCode",
+        "lambda:UntagResource",
+        "lambda:TagResource",
+        "lambda:PutFunctionConcurrency",
+        "lambda:ListVersionsByFunction",
+        "lambda:ListTags",
+        "lambda:GetFunctionConfiguration",
+        "lambda:GetFunctionCodeSigningConfig",
+        "lambda:GetFunction",
+        "lambda:DeleteFunctionConcurrency",
+        "lambda:DeleteFunction",
+        "lambda:CreateFunction"
+      ],
       "Effect": "Allow",
       "Resource": "arn:aws:lambda:<REGIAO>:<CONTA>:function:<project>-*",
       "Sid": "Lambda"
     },
     {
-      "Action": "logs:*",
+      "Action": [
+        "logs:UntagResource",
+        "logs:UntagLogGroup",
+        "logs:TagResource",
+        "logs:TagLogGroup",
+        "logs:PutRetentionPolicy",
+        "logs:ListTagsLogGroup",
+        "logs:ListTagsForResource",
+        "logs:DisassociateKmsKey",
+        "logs:DeleteRetentionPolicy",
+        "logs:DeleteLogGroup",
+        "logs:CreateLogGroup",
+        "logs:AssociateKmsKey"
+      ],
       "Effect": "Allow",
       "Resource": "arn:aws:logs:<REGIAO>:<CONTA>:log-group:/aws/lambda/<project>-*",
       "Sid": "Logs"
@@ -487,7 +818,22 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
       "Sid": "LogsList"
     },
     {
-      "Action": "dynamodb:*",
+      "Action": [
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateItem",
+        "dynamodb:UpdateContinuousBackups",
+        "dynamodb:UntagResource",
+        "dynamodb:TagResource",
+        "dynamodb:PutItem",
+        "dynamodb:ListTagsOfResource",
+        "dynamodb:GetItem",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeContinuousBackups",
+        "dynamodb:DeleteTable",
+        "dynamodb:DeleteItem",
+        "dynamodb:CreateTable"
+      ],
       "Effect": "Allow",
       "Resource": "arn:aws:dynamodb:<REGIAO>:<CONTA>:table/<project>-*",
       "Sid": "ParameterTable"
@@ -495,16 +841,25 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
     {
       "Action": [
         "dynamodb:ListTagsOfResource",
-        "dynamodb:ListExports",
         "dynamodb:ExportTableToPointInTime",
         "dynamodb:DescribeTimeToLive",
         "dynamodb:DescribeTable",
-        "dynamodb:DescribeExport",
         "dynamodb:DescribeContinuousBackups"
       ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/project": "<project>"
+        }
+      },
       "Effect": "Allow",
       "Resource": "arn:aws:dynamodb:<REGIAO>:<CONTA>:table/*",
-      "Sid": "SourceTablesReadAndExport"
+      "Sid": "TaggedSourceTablesReadAndExport"
+    },
+    {
+      "Action": "dynamodb:DescribeExport",
+      "Effect": "Allow",
+      "Resource": "arn:aws:dynamodb:<REGIAO>:<CONTA>:table/*/export/*",
+      "Sid": "ExportStatus"
     },
     {
       "Action": [
@@ -532,9 +887,6 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
     },
     {
       "Action": [
-        "lambda:UntagResource",
-        "lambda:TagResource",
-        "lambda:ListTags",
         "lambda:ListEventSourceMappings",
         "lambda:GetEventSourceMapping"
       ],
@@ -544,29 +896,70 @@ Pelo console: crie a role com a relação de confiança (5C) e depois **Adiciona
     },
     {
       "Action": [
-        "sqs:*",
-        "sns:*",
-        "cloudwatch:*"
+        "lambda:UntagResource",
+        "lambda:TagResource",
+        "lambda:ListTags"
       ],
       "Effect": "Allow",
-      "Resource": [
-        "arn:aws:sqs:<REGIAO>:<CONTA>:<project>-*",
-        "arn:aws:sns:<REGIAO>:<CONTA>:<project>-*",
-        "arn:aws:cloudwatch:<REGIAO>:<CONTA>:alarm:<project>-*",
-        "arn:aws:cloudwatch::<CONTA>:dashboard/<project>-*"
-      ],
-      "Sid": "QueuesTopicsDashboards"
+      "Resource": "arn:aws:lambda:<REGIAO>:<CONTA>:event-source-mapping:*",
+      "Sid": "EventSourceMappingsTags"
     },
     {
       "Action": [
-        "sns:Unsubscribe",
-        "sns:GetSubscriptionAttributes",
-        "cloudwatch:ListTagsForResource",
-        "cloudwatch:DescribeAlarms"
+        "sqs:UntagQueue",
+        "sqs:TagQueue",
+        "sqs:SetQueueAttributes",
+        "sqs:ListQueueTags",
+        "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes",
+        "sqs:DeleteQueue",
+        "sqs:CreateQueue"
       ],
       "Effect": "Allow",
+      "Resource": "arn:aws:sqs:<REGIAO>:<CONTA>:<project>-*",
+      "Sid": "OnFailureQueue"
+    },
+    {
+      "Action": [
+        "sns:UntagResource",
+        "sns:Unsubscribe",
+        "sns:TagResource",
+        "sns:Subscribe",
+        "sns:SetTopicAttributes",
+        "sns:ListTagsForResource",
+        "sns:ListSubscriptionsByTopic",
+        "sns:GetTopicAttributes",
+        "sns:GetSubscriptionAttributes",
+        "sns:DeleteTopic",
+        "sns:CreateTopic"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:sns:<REGIAO>:<CONTA>:<project>-*",
+      "Sid": "AlarmTopic"
+    },
+    {
+      "Action": [
+        "cloudwatch:UntagResource",
+        "cloudwatch:TagResource",
+        "cloudwatch:PutMetricAlarm",
+        "cloudwatch:PutDashboard",
+        "cloudwatch:ListTagsForResource",
+        "cloudwatch:GetDashboard",
+        "cloudwatch:DeleteDashboards",
+        "cloudwatch:DeleteAlarms"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:cloudwatch:<REGIAO>:<CONTA>:alarm:<project>-*",
+        "arn:aws:cloudwatch::<CONTA>:dashboard/<project>-*"
+      ],
+      "Sid": "AlarmsAndDashboard"
+    },
+    {
+      "Action": "cloudwatch:DescribeAlarms",
+      "Effect": "Allow",
       "Resource": "*",
-      "Sid": "AlarmAndSubscriptionRead"
+      "Sid": "AlarmRead"
     }
   ]
 }

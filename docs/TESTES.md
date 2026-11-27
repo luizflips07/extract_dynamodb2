@@ -29,6 +29,7 @@ Os de integração aparecem como `s` (pulados), o que é o esperado.
 |---|---|
 | `test_handler.py` | Chave S3 determinística, NDJSON.gz, falha parcial, roteamento por tabela, tabela não configurada, aviso na SQS com parâmetros (uma vez por lote), fila indisponível e leitura da tabela de parâmetros (cache, releitura, indisponibilidade, item ausente) |
 | `test_oidc_provider.py` | Criar ou reaproveitar o provedor OIDC da conta |
+| `test_deploy_policies.py` | Travas das roles de deploy: sem `serviço:*`, boundary, KMS, tags e confiança só por environment |
 | `test_partitioning.py` | Particionamento do RAW por coluna (`partition_by`) |
 | `test_generate_ddl.py` | Views Trusted e schema de todos os `tables/*.yaml` |
 | `test_load_initial.py` | Carga inicial (snapshot) |

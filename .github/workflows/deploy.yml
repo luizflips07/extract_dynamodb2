@@ -126,11 +126,12 @@ jobs:
           if [ -n "$TABLES" ]; then python scripts/initial_load.py --tables $TABLES --wait; else echo "nenhuma tabela desta fonte mudou"; fi
 
   # 3) Data Lake: snapshot -> RAW, registro das partições existentes e views Trusted, só das tabelas novas/alteradas.
-  #    Sem environment: usa a variável de repositório DATALAKE_DEPLOY_ROLE_ARN (evita pedir aprovação duas vezes).
+  #    Usa o environment datalake-prod (pede aprovação de novo): a role não confia na branch.
   load:
     needs: [datalake, producer]
     if: needs.datalake.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
+    environment: datalake-prod
     env:
       CHANGES: ${{ needs.datalake.outputs.changes }}
     steps:

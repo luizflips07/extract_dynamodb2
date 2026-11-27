@@ -39,6 +39,8 @@ resource "aws_iam_role" "registrar" {
   count              = local.registrar_enabled ? 1 : 0
   name               = local.registrar_name
   assume_role_policy = data.aws_iam_policy_document.registrar_assume.json
+
+  permissions_boundary = var.use_permissions_boundary ? "arn:${data.aws_partition.current.partition}:iam::${local.account_id}:policy/gha-${local.cfg.project}-boundary" : null
 }
 
 data "aws_iam_policy_document" "registrar" {

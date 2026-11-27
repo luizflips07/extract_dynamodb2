@@ -11,7 +11,7 @@ Cria 5 tabelas de exemplo e as popula, para testar o pipeline CDC quando a conta
 | `vendas` | `cliente_id` + `venda_id` | 100.000 | referencia clientes e produtos |
 | `faturamento` | `fatura_id` | 200 | `F000001`…; 4 colunas (`fatura_id`, `cliente_id`, `valor`, `data_emissao`) |
 
-Todas: on-demand, **Streams `NEW_AND_OLD_IMAGES`**, **PITR**, criptografia em repouso. Os atributos casam com `tables/*.yaml`
+Todas levam a tag `project=dynamodb-produtor` (variável `pipeline_project`), exigida pelo deploy. Todas: on-demand, **Streams `NEW_AND_OLD_IMAGES`**, **PITR**, criptografia em repouso. Os atributos casam com `tables/*.yaml`
 (o teste `tests/test_mock_generate.py` garante isso).
 
 ## Passo a passo

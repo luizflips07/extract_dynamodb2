@@ -89,13 +89,13 @@ Lê todas as fontes e tabelas. Cria: CMK (rotação; uma statement por fonte lib
 
 ## 7. CI/CD
 - **validate.yml (PR):** ruff, pytest (inclui validação de schema de todas as tabelas), geração de DDL, `terraform fmt/validate` e checkov nas duas stacks.
-- **deploy.yml (main):** testes e descoberta das fontes → apply **datalake** (environment `datalake-prod`, com aprovação) → apply **producer em matriz, uma execução por fonte** (environment `producer-<fonte>`) e export das tabelas novas/alteradas → **load** (snapshot, partições e views). Credenciais por OIDC; state remoto S3 com lock e criptografia. O id da CMK criada no datalake é passado aos jobs seguintes, então o primeiro deploy funciona numa conta vazia.
+- **deploy.yml (main):** testes e descoberta das fontes → apply **datalake** (environment `datalake-prod`, com aprovação) → apply **producer em matriz, uma execução por fonte** (environment `producer-<fonte>`) e export das tabelas novas/alteradas → **load** (snapshot, partições e views; environment `datalake-prod`, nova aprovação). As roles de deploy têm ações listadas, state separado e *permissions boundary* ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)). Credenciais por OIDC; state remoto S3 com lock e criptografia. O id da CMK criada no datalake é passado aos jobs seguintes, então o primeiro deploy funciona numa conta vazia.
 - Configuração (roles OIDC, environments, variáveis e secrets): [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md). Os valores reais vêm de secrets; o repositório guarda só exemplos.
 
 ## 8. Procedimentos
 
 **Nova tabela**
-1. Na tabela: Streams `NEW_AND_OLD_IMAGES` + PITR.
+1. Na tabela: Streams `NEW_AND_OLD_IMAGES` + PITR e a tag `project=<project>`.
 2. Criar `tables/<tabela>.yaml` (source, nome, keys, columns) e abrir PR.
 3. Após o deploy: `python scripts/initial_load.py --table <tabela>` (idealmente antes do ESM habilitar) e `python scripts/generate_trusted_ddl.py`, aplicando o SQL no Athena.
 

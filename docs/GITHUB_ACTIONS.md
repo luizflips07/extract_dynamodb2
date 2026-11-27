@@ -13,12 +13,26 @@ O GitHub entrega ao workflow um token assinado e a AWS troca esse token por cred
 
 | Role | Quem assume (`sub` do token) | Alcance |
 |---|---|---|
-| `gha-<project>-datalake` | `environment:datalake-prod` e `ref:refs/heads/main` | state, buckets RAW e de logs, Glue `raw`/`trusted`, Athena, KMS do projeto, Lambda registradora |
-| `gha-<project>-producer-<fonte>` | `environment:producer-<fonte>` | state, Lambda e role writer, ESM, SQS, SNS, alarmes, tabela de parâmetros, export das tabelas, KMS do projeto |
+| `gha-<project>-datalake` | `environment:datalake-prod` | próprio state, buckets RAW e de logs (sem apagar objetos), Glue `raw`/`trusted`, Athena, KMS do projeto, Lambda registradora |
+| `gha-<project>-producer-<fonte>` | `environment:producer-<fonte>` | próprio state, Lambda e role writer, ESM, SQS, SNS, alarmes, tabela de parâmetros, export das tabelas marcadas, KMS do projeto |
 
-Todas valem só para o repositório informado em `github_repository`.
+Todas valem só para o repositório informado em `github_repository`. Nenhuma confia em branch.
 
-**Limite conhecido:** as roles de deploy criam roles `<project>-*` com políticas livres e as entregam a Lambdas. Quem consegue alterar a `main` pode, por esse caminho, obter mais permissão na conta. Proteja a branch `main`, mantenha a aprovação manual e, em produção, adicione um *permissions boundary*.
+**Limites aplicados:**
+- **Permissions boundary** (`gha-<project>-boundary`): criar ou alterar uma role `<project>-*` só é permitido se ela estiver presa a ele. O boundary é o teto das Lambdas; as roles de deploy não conseguem alterá-lo.
+- **KMS:** só cria chaves já marcadas com `project=<project>` e só administra (e marca) chaves que têm essa tag.
+- **State:** cada role lê e grava apenas o próprio arquivo (`<tfstate_prefix>/datalake/raw.tfstate` ou `<tfstate_prefix>/producer/<fonte>.tfstate`) e o lock. Listar o bucket mostra nomes de objetos.
+- **Ações:** listadas uma a uma, sem `serviço:*`.
+
+**Tabelas de origem:** o deploy só lê e exporta tabelas DynamoDB com a tag `project=<project>`. Marque cada uma antes do primeiro deploy dela (o `mock/` já marca; se o `project` mudar, use `-var="pipeline_project=<project>"`):
+
+```powershell
+aws dynamodb tag-resource --resource-arn arn:aws:dynamodb:<REGIAO>:<CONTA>:table/<tabela> --tags Key=project,Value=<project>
+```
+
+A condição por tag depende do ABAC do DynamoDB, ativo por padrão na maioria das contas: confira em *DynamoDB → Settings → Attribute-based access control* (cartão ausente ou `On`).
+
+**Limites que continuam:** quem consegue alterar a `main` altera o código que roda depois da aprovação, e o environment `producer-<fonte>` não pede aprovação. Proteja a branch `main`. O boundary permite às Lambdas ler os streams de qualquer tabela da conta.
 
 ## 2. Passo a passo (uma vez)
 
@@ -81,9 +95,11 @@ A chave KMS do bucket RAW não é secret: o job `datalake` cria a CMK e passa o 
 - **Automático:** push na `main` que altere `tables/*.yaml`.
 - **Manual:** *Actions → deploy → Run workflow* (branch `main`).
 
-O job `datalake` espera a sua aprovação (*Review deployments*).
+O job `datalake` espera a sua aprovação (*Review deployments*). Quando há tabela nova ou alterada, o job `load` pede uma segunda aprovação.
 
 ## 4. Teste realizado (25/11/2026)
+
+Feito com as permissões anteriores, mais amplas. As permissões atuais foram validadas por simulação e **ainda não passaram por um deploy real**.
 
 Ambiente recriado do zero (Data Lake e producer apagados; 5 tabelas do `mock/` recriadas e carregadas) e `deploy` manual:
 
@@ -109,3 +125,6 @@ Em 26/11/2026 passaram também o disparo automático por mudança em `tables/*.y
 | `valores de exemplo sem secret correspondente` | Secret não cadastrado |
 | `AccessDenied` no `terraform apply` | Falta uma ação na role: ajuste `infra/github_oidc/main.tf` e reaplique à mão |
 | Job parado em *Waiting* | Aprovação do `datalake-prod` |
+| `AccessDenied` em `dynamodb:DescribeTable` de uma tabela de origem | Falta a tag `project=<project>` na tabela, ou o ABAC está desligado (seção 1) |
+| `AccessDenied` em `iam:CreateRole` ou `iam:PutRolePolicy` | A role precisa do `permissions_boundary`: reaplique `infra/github_oidc` antes do deploy |
+| `NoSuchEntity` do boundary num apply manual | Aplique `infra/github_oidc` antes, ou use `-var="use_permissions_boundary=false"` |

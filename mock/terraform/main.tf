@@ -26,6 +26,12 @@ variable "table_name_prefix" {
   description = "Prefixo opcional. Mantenha vazio para casar com tables/*.yaml do pipeline."
 }
 
+variable "pipeline_project" {
+  type        = string
+  default     = "dynamodb-produtor"
+  description = "`project` do config.yaml: o deploy só lê e exporta tabelas com a tag project=<project>"
+}
+
 variable "deletion_protection" {
   type        = bool
   default     = false
@@ -55,6 +61,7 @@ resource "aws_dynamodb_table" "this" {
   for_each = local.tables
 
   name         = "${var.table_name_prefix}${each.key}"
+  tags         = { project = var.pipeline_project }
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = each.value.hash_key
   range_key    = each.value.range_key

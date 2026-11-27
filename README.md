@@ -54,7 +54,9 @@ DynamoDB ── Streams ──►  Event Source Mapping ──► Lambda writer 
 cd mock/terraform && terraform init && terraform apply && cd ../..
 python mock/data/load_data.py
 ```
-Para tabelas reais: habilite Streams `NEW_AND_OLD_IMAGES` e PITR e crie um `tables/<tabela>.yaml` para cada uma.
+Para tabelas reais: habilite Streams `NEW_AND_OLD_IMAGES` e PITR, marque com a tag `project=<project>` (exigida pelo deploy do GitHub Actions) e crie um `tables/<tabela>.yaml` para cada uma.
+
+> Os passos à mão abaixo usam o *permissions boundary* criado por `infra/github_oidc`. Sem essa stack na conta, acrescente `-var="use_permissions_boundary=false"` aos `terraform apply` de `datalake` e `producer`.
 
 **1. Data Lake (bucket RAW, CMK, Glue)**
 > Se `tfstate_prefix` em `config.yaml` não estiver vazio (cópias criadas por issue), coloque-o antes da `key`: `<tfstate_prefix>/datalake/raw.tfstate` e `<tfstate_prefix>/producer/<fonte>.tfstate`.
@@ -108,7 +110,7 @@ SELECT count(*) FROM trusted.local_clientes WHERE id = 'E2E-1';                 
 
 ## CI/CD (GitHub Actions)
 - `validate.yml` (PR): ruff, pytest, geração de DDL, `terraform fmt/validate` e checkov.
-- `deploy.yml`: roda **somente** quando `tables/*.yaml` muda (arquivo novo, alterado ou removido) ou manualmente (`workflow_dispatch`), sempre na `main`. Para cada tabela compara `partition_by` + `keys` + `columns` com a tabela Glue existente: **igual → nada a fazer; diferente (ou nova) → a tabela Glue é apagada/recriada no formato novo e recarregada** (export + snapshot + partições + view Trusted). Dados no S3 não são apagados. Fluxo: testes → datalake (`datalake-prod`, aprovação) → producer por fonte (`producer-<fonte>`) → load. Funciona numa conta vazia: não é preciso aplicar nada à mão antes, além da conexão OIDC e da configuração do repositório ([docs/GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md)).
+- `deploy.yml`: roda **somente** quando `tables/*.yaml` muda (arquivo novo, alterado ou removido) ou manualmente (`workflow_dispatch`), sempre na `main`. Para cada tabela compara `partition_by` + `keys` + `columns` com a tabela Glue existente: **igual → nada a fazer; diferente (ou nova) → a tabela Glue é apagada/recriada no formato novo e recarregada** (export + snapshot + partições + view Trusted). Dados no S3 não são apagados. Fluxo: testes → datalake (`datalake-prod`, aprovação) → producer por fonte (`producer-<fonte>`) → load (`datalake-prod`, segunda aprovação). Funciona numa conta vazia: não é preciso aplicar nada à mão antes, além da conexão OIDC e da configuração do repositório ([docs/GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md)).
 
 ## Garantias e limites
 - Entrega **at-least-once**; ordem **por chave** dentro do shard (sem ordem global). A Trusted deduplica por chave + `SequenceNumber`; o snapshot (seq 0) perde para qualquer evento real.

@@ -64,6 +64,13 @@ provider "aws" {
 }
 
 data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+
+variable "use_permissions_boundary" {
+  type        = bool
+  default     = true
+  description = "Prende as roles ao boundary gha-<project>-boundary (criado por infra/github_oidc). O pipeline exige."
+}
 
 output "raw_bucket" {
   value = aws_s3_bucket.raw.id

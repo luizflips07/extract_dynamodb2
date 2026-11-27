@@ -16,6 +16,7 @@ Evento (todos os campos são opcionais):
 """
 from __future__ import annotations
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
@@ -38,6 +39,7 @@ DEFAULT_COUNTS = {"clientes": 500, "produtos": 100, "vendas": 100_000, "faturame
 CHUNK = 500
 WORKERS = 8
 SAFETY_MARGIN_MS = 20_000  # para de gravar antes do timeout da Lambda
+PIPELINE_PROJECT = os.environ.get("PIPELINE_PROJECT", "dynamodb-produtor")  # `project` do config.yaml
 
 ddb = boto3.client("dynamodb")
 ddb_res = boto3.resource("dynamodb")
@@ -79,7 +81,11 @@ def create_table(full_name: str, hash_key: str, range_key: str | None) -> str:
         BillingMode="PAY_PER_REQUEST",
         StreamSpecification={"StreamEnabled": True, "StreamViewType": "NEW_AND_OLD_IMAGES"},
         SSESpecification={"Enabled": True},
-        Tags=[{"Key": "purpose", "Value": "mock"}, {"Key": "managed-by", "Value": "mock-lambda"}],
+        Tags=[
+            {"Key": "project", "Value": PIPELINE_PROJECT},  # o deploy só lê e exporta tabelas com esta tag
+            {"Key": "purpose", "Value": "mock"},
+            {"Key": "managed-by", "Value": "mock-lambda"},
+        ],
     )
     ddb.get_waiter("table_exists").wait(TableName=full_name, WaiterConfig={"Delay": 3, "MaxAttempts": 40})
     # PITR (necessário para a carga inicial/export); pode levar alguns segundos para ficar disponível

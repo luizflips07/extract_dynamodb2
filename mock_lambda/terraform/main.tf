@@ -33,6 +33,12 @@ variable "table_name_prefix" {
   description = "Limita a role da Lambda às tabelas com este prefixo (vazio = todas as tabelas da conta/região)."
 }
 
+variable "pipeline_project" {
+  type        = string
+  default     = "dynamodb-produtor"
+  description = "`project` do config.yaml: vira a tag project das tabelas criadas"
+}
+
 variable "memory_mb" {
   type    = number
   default = 1024
@@ -126,6 +132,10 @@ resource "aws_lambda_function" "this" {
   timeout          = var.timeout_seconds
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
+
+  environment {
+    variables = { PIPELINE_PROJECT = var.pipeline_project }
+  }
 
   depends_on = [aws_cloudwatch_log_group.this, aws_iam_role_policy.this]
 }

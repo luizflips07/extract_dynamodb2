@@ -13,6 +13,12 @@ variable "source_name" {
   description = "Nome da fonte (arquivo sources/<nome>.yaml)"
 }
 
+variable "use_permissions_boundary" {
+  type        = bool
+  default     = true
+  description = "Prende as roles ao boundary gha-<project>-boundary (criado por infra/github_oidc). O pipeline exige."
+}
+
 locals {
   cfg    = yamldecode(file("${path.module}/../../config.yaml"))
   source = yamldecode(file("${path.module}/../../sources/${var.source_name}.yaml"))
@@ -244,6 +250,8 @@ data "aws_iam_policy_document" "assume" {
 resource "aws_iam_role" "writer" {
   name               = local.name # contrato com a stack datalake: <project>-<source>-writer
   assume_role_policy = data.aws_iam_policy_document.assume.json
+
+  permissions_boundary = var.use_permissions_boundary ? "arn:${data.aws_partition.current.partition}:iam::${local.account_id}:policy/gha-${local.cfg.project}-boundary" : null
 }
 
 data "aws_iam_policy_document" "writer" {

@@ -62,7 +62,7 @@ Cada arquivo em `tables/*.yaml` vira Lambda, role, ESM, fila, alarmes, prefixo S
 | Variável | Obrig. | Para que serve |
 |---|---|---|
 | `source` | **Obrigatório** | Fonte dona da tabela (nome de um arquivo de `sources/`). |
-| `table_name` | **Obrigatório** | Nome **exato** da tabela DynamoDB (precisa ter Streams `NEW_AND_OLD_IMAGES` e PITR). |
+| `table_name` | **Obrigatório** | Nome **exato** da tabela DynamoDB (precisa ter Streams `NEW_AND_OLD_IMAGES`, PITR e a tag `project=<project>`). |
 | `glue_table` | Opcional | Nome da tabela Glue do RAW. Padrão: `dynamodb_<table_name>`. |
 | `keys` | **Obrigatório** | Atributos da chave primária (partição [+ ordenação]). Usado na deduplicação da Trusted e no snapshot. Devem estar em `columns`. |
 | `columns` | **Obrigatório** | Schema lógico: `name`, `dynamo` (`S`/`N`/`BOOL`/`JSON`) e `type` opcional (`timestamp`, `decimal(18,2)`, `int`, …). Gera a view Trusted. |
@@ -118,6 +118,7 @@ Não é usado em produção; só se for recriar os dados de exemplo na nova cont
 | `region` | `mock/terraform/main.tf` | Região onde as tabelas mock são criadas. **Igual a `region` do `config.yaml`.** | `us-east-1` |
 | `allowed_account_id` | `mock/terraform/main.tf` | Trava o apply na conta certa (`-var="allowed_account_id=<ID>"`). | `null` (sem trava) |
 | `table_name_prefix` | `mock/terraform/main.tf` | Prefixo dos nomes das tabelas. Deixe vazio para casar com `tables/*.yaml`. | `""` |
+| `pipeline_project` | `mock/terraform/main.tf` e `mock_lambda/terraform/main.tf` | Vira a tag `project` das tabelas mock. **Igual ao `project` do `config.yaml`.** | `dynamodb-produtor` |
 | `deletion_protection` | `mock/terraform/main.tf` | Proteção contra exclusão das tabelas mock. | `false` |
 | `--region`, `--prefix`, `--clientes/--produtos/--vendas`, `--seed` | `mock/data/load_data.py` | Região (padrão: a do `aws configure`), prefixo de tabela e volumes da carga fictícia. | região do CLI / 500 / 100 / 100000 / 42 |
 
@@ -136,7 +137,7 @@ Não é usado em produção; só se for recriar os dados de exemplo na nova cont
 
 1. **Bucket de state** (`TFSTATE_BUCKET`) na região do projeto.
 2. **Provedor OIDC do GitHub** e **roles de deploy**: criados por `infra/github_oidc` ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)).
-3. **Tabelas DynamoDB** com Streams `NEW_AND_OLD_IMAGES` e PITR (para testes, `mock/` cria).
+3. **Tabelas DynamoDB** com Streams `NEW_AND_OLD_IMAGES`, PITR e a tag `project=<project>` (para testes, `mock/` cria).
 
 ## 9. Checklist de migração (ordem)
 

@@ -30,7 +30,7 @@ columns:
 Opcional: `partition_by: <coluna>` para particionar o RAW por uma coluna.
 
 ## 2. Criar a tabela de origem (mock) e carregar dados
-A tabela precisa existir com Streams `NEW_AND_OLD_IMAGES` e PITR. O mock já inclui `faturamento`:
+A tabela precisa existir com Streams `NEW_AND_OLD_IMAGES` e PITR. Para o deploy pelo GitHub Actions, também precisa da tag `project=<project>`. O mock já inclui `faturamento` e marca as tabelas:
 ```bash
 cd mock/terraform
 terraform init
@@ -43,6 +43,7 @@ python mock/data/load_data.py --tables faturamento       # 200 faturas
 Confirme: `aws dynamodb describe-table --table-name faturamento --query "Table.[StreamSpecification,ItemCount]"`.
 
 ## 3. Data Lake (Glue/RAW) — cria a tabela `raw.dynamodb_faturamento`
+> Os `terraform apply` dos passos 3 e 5 usam o boundary criado por `infra/github_oidc`. Sem essa stack na conta, acrescente `-var="use_permissions_boundary=false"`.
 > Se `tfstate_prefix` em `config.yaml` não estiver vazio (cópias criadas por issue), coloque-o antes da `key`: `<tfstate_prefix>/datalake/raw.tfstate` e `<tfstate_prefix>/producer/<fonte>.tfstate`.
 
 ```bash
