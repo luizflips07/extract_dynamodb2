@@ -120,7 +120,7 @@ Ao criar uma role com **Identidade da Web** (*Web identity*), os campos como **G
 | Sem `environment`, em push ou disparo manual | `:ref:refs/heads/<branch>` |
 | Sem `environment`, em pull request | `:pull_request` |
 
-4. Selecione apenas as permissões que o workflow usa (evite `AdministratorAccess`), dê um nome e crie.
+4. Selecione apenas as permissões que o workflow usa (evite `AdministratorAccess`), dê um nome e crie. As permissões deste projeto estão no [anexo](#anexo-as-roles-completas).
 5. Cadastre o ARN da role no secret do repositório.
 
 O provedor `token.actions.githubusercontent.com` precisa existir na conta; ele é único e compartilhado entre repositórios. O workflow precisa de `permissions: id-token: write` e `contents: read`.
@@ -152,3 +152,422 @@ Aprove o `datalake-prod` na aba *Actions*. A etapa `configure-aws-credentials` p
 | Provedor OIDC | `aws iam list-open-id-connect-providers` deve listar `token.actions.githubusercontent.com`, com audiência `sts.amazonaws.com` |
 | `project` | O nome da role usa o `project` do `config.yaml` |
 | Propagação | Espere um minuto após alterar a role |
+
+## Anexo: as roles completas
+
+Cópia genérica do que `infra/github_oidc` cria, para conferência ou criação pelo console. A fonte da verdade é o Terraform: se ele mudar, atualize este anexo.
+
+| Marcador | Valor |
+|---|---|
+| `<CONTA>` | número da conta AWS |
+| `<REGIAO>` | região, ex.: `us-east-1` |
+| `<project>` | `project` do `config.yaml` |
+| `<fonte>` | nome do arquivo em `sources/` |
+| `<BUCKET_RAW>` | `datalake.raw_bucket` |
+| `<BUCKET_STATE>` | bucket do state do Terraform |
+| `<dono>`, `<repositorio>`, `<id-...>` | do `sub_claim_prefix` (passo 2) |
+
+Os bancos Glue aparecem como `raw` e `trusted`; troque se o `config.yaml` usar outros.
+
+Pelo console: crie a role com a relação de confiança (5C) e depois **Adicionar permissões → Criar política em linha → JSON**.
+
+### Role do Data Lake: `gha-<project>-datalake`
+
+**Relação de confiança**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<CONTA>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:sub": [
+            "repo:<dono>@<id-do-dono>/<repositorio>@<id-do-repositorio>:environment:datalake-prod",
+            "repo:<dono>@<id-do-dono>/<repositorio>@<id-do-repositorio>:ref:refs/heads/main"
+          ],
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
+```
+
+**Política de permissões** (em linha, nome `deploy`)
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<BUCKET_STATE>",
+      "Sid": "StateList"
+    },
+    {
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<BUCKET_STATE>/*",
+      "Sid": "StateObjects"
+    },
+    {
+      "Action": [
+        "kms:TagResource",
+        "kms:ListKeys",
+        "kms:ListAliases",
+        "kms:CreateKey"
+      ],
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "KmsCreateAndList"
+    },
+    {
+      "Action": [
+        "kms:UpdateAlias",
+        "kms:DeleteAlias",
+        "kms:CreateAlias"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:kms:<REGIAO>:<CONTA>:key/*",
+        "arn:aws:kms:<REGIAO>:<CONTA>:alias/*"
+      ],
+      "Sid": "KmsAliases"
+    },
+    {
+      "Action": "kms:*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/project": "<project>"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:kms:*:*:key/*",
+      "Sid": "KmsProjectKeys"
+    },
+    {
+      "Action": [
+        "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:UntagRole",
+        "iam:TagRole",
+        "iam:PutRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:GetRolePolicy",
+        "iam:GetRole",
+        "iam:DeleteRolePolicy",
+        "iam:DeleteRole",
+        "iam:CreateRole"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:iam::<CONTA>:role/<project>-*",
+      "Sid": "ProjectRoles"
+    },
+    {
+      "Action": "iam:PassRole",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:iam::<CONTA>:role/<project>-*",
+      "Sid": "PassOnlyToLambda"
+    },
+    {
+      "Action": "lambda:*",
+      "Effect": "Allow",
+      "Resource": "arn:aws:lambda:<REGIAO>:<CONTA>:function:<project>-*",
+      "Sid": "Lambda"
+    },
+    {
+      "Action": "logs:*",
+      "Effect": "Allow",
+      "Resource": "arn:aws:logs:<REGIAO>:<CONTA>:log-group:/aws/lambda/<project>-*",
+      "Sid": "Logs"
+    },
+    {
+      "Action": "logs:DescribeLogGroups",
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "LogsList"
+    },
+    {
+      "Action": "s3:*",
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::<BUCKET_RAW>/*",
+        "arn:aws:s3:::<BUCKET_RAW>-access-logs/*",
+        "arn:aws:s3:::<BUCKET_RAW>-access-logs",
+        "arn:aws:s3:::<BUCKET_RAW>"
+      ],
+      "Sid": "RawAndLogsBuckets"
+    },
+    {
+      "Action": "glue:*",
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:glue:<REGIAO>:<CONTA>:table/trusted/*",
+        "arn:aws:glue:<REGIAO>:<CONTA>:table/raw/*",
+        "arn:aws:glue:<REGIAO>:<CONTA>:database/trusted",
+        "arn:aws:glue:<REGIAO>:<CONTA>:database/raw",
+        "arn:aws:glue:<REGIAO>:<CONTA>:catalog"
+      ],
+      "Sid": "Glue"
+    },
+    {
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:GetWorkGroup",
+        "athena:GetQueryResults",
+        "athena:GetQueryExecution"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:athena:<REGIAO>:<CONTA>:workgroup/primary",
+      "Sid": "AthenaViewsAndRepair"
+    },
+    {
+      "Action": "events:*",
+      "Effect": "Allow",
+      "Resource": "arn:aws:events:<REGIAO>:<CONTA>:rule/<project>-*",
+      "Sid": "PartitionRegistrarRule"
+    }
+  ]
+}
+```
+
+### Role da conta produtora: `gha-<project>-producer-<fonte>`
+
+**Relação de confiança**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<CONTA>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:<dono>@<id-do-dono>/<repositorio>@<id-do-repositorio>:environment:producer-<fonte>"
+        }
+      }
+    }
+  ]
+}
+```
+
+**Política de permissões** (em linha, nome `deploy`)
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<BUCKET_STATE>",
+      "Sid": "StateList"
+    },
+    {
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<BUCKET_STATE>/*",
+      "Sid": "StateObjects"
+    },
+    {
+      "Action": [
+        "kms:TagResource",
+        "kms:ListKeys",
+        "kms:ListAliases",
+        "kms:CreateKey"
+      ],
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "KmsCreateAndList"
+    },
+    {
+      "Action": [
+        "kms:UpdateAlias",
+        "kms:DeleteAlias",
+        "kms:CreateAlias"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:kms:<REGIAO>:<CONTA>:key/*",
+        "arn:aws:kms:<REGIAO>:<CONTA>:alias/*"
+      ],
+      "Sid": "KmsAliases"
+    },
+    {
+      "Action": "kms:*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/project": "<project>"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:kms:*:*:key/*",
+      "Sid": "KmsProjectKeys"
+    },
+    {
+      "Action": [
+        "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:UntagRole",
+        "iam:TagRole",
+        "iam:PutRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:GetRolePolicy",
+        "iam:GetRole",
+        "iam:DeleteRolePolicy",
+        "iam:DeleteRole",
+        "iam:CreateRole"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:iam::<CONTA>:role/<project>-*",
+      "Sid": "ProjectRoles"
+    },
+    {
+      "Action": "iam:PassRole",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:iam::<CONTA>:role/<project>-*",
+      "Sid": "PassOnlyToLambda"
+    },
+    {
+      "Action": "lambda:*",
+      "Effect": "Allow",
+      "Resource": "arn:aws:lambda:<REGIAO>:<CONTA>:function:<project>-*",
+      "Sid": "Lambda"
+    },
+    {
+      "Action": "logs:*",
+      "Effect": "Allow",
+      "Resource": "arn:aws:logs:<REGIAO>:<CONTA>:log-group:/aws/lambda/<project>-*",
+      "Sid": "Logs"
+    },
+    {
+      "Action": "logs:DescribeLogGroups",
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "LogsList"
+    },
+    {
+      "Action": "dynamodb:*",
+      "Effect": "Allow",
+      "Resource": "arn:aws:dynamodb:<REGIAO>:<CONTA>:table/<project>-*",
+      "Sid": "ParameterTable"
+    },
+    {
+      "Action": [
+        "dynamodb:ListTagsOfResource",
+        "dynamodb:ListExports",
+        "dynamodb:ExportTableToPointInTime",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeExport",
+        "dynamodb:DescribeContinuousBackups"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:dynamodb:<REGIAO>:<CONTA>:table/*",
+      "Sid": "SourceTablesReadAndExport"
+    },
+    {
+      "Action": [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<BUCKET_RAW>/*-initial/*",
+      "Sid": "InitialExportToRaw"
+    },
+    {
+      "Action": [
+        "lambda:UpdateEventSourceMapping",
+        "lambda:DeleteEventSourceMapping",
+        "lambda:CreateEventSourceMapping"
+      ],
+      "Condition": {
+        "ArnLike": {
+          "lambda:FunctionArn": "arn:aws:lambda:<REGIAO>:<CONTA>:function:<project>-*"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "EventSourceMappings"
+    },
+    {
+      "Action": [
+        "lambda:UntagResource",
+        "lambda:TagResource",
+        "lambda:ListTags",
+        "lambda:ListEventSourceMappings",
+        "lambda:GetEventSourceMapping"
+      ],
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "EventSourceMappingsRead"
+    },
+    {
+      "Action": [
+        "sqs:*",
+        "sns:*",
+        "cloudwatch:*"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:sqs:<REGIAO>:<CONTA>:<project>-*",
+        "arn:aws:sns:<REGIAO>:<CONTA>:<project>-*",
+        "arn:aws:cloudwatch:<REGIAO>:<CONTA>:alarm:<project>-*",
+        "arn:aws:cloudwatch::<CONTA>:dashboard/<project>-*"
+      ],
+      "Sid": "QueuesTopicsDashboards"
+    },
+    {
+      "Action": [
+        "sns:Unsubscribe",
+        "sns:GetSubscriptionAttributes",
+        "cloudwatch:ListTagsForResource",
+        "cloudwatch:DescribeAlarms"
+      ],
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "AlarmAndSubscriptionRead"
+    }
+  ]
+}
+```
