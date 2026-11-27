@@ -84,6 +84,49 @@ Numa correção, o plano deve mostrar só as roles alteradas (`0 to add, 2 to ch
 
 Um `terraform apply` posterior sem `github_subject_prefix` desfaz a edição manual.
 
+### 5C. Erro no formulário do console: "caracteres que não são válidos: @"
+
+Ao criar uma role com **Identidade da Web** (*Web identity*), os campos como **GitHub organization** não aceitam `@`, então não servem para o subject imutável. Escreva a política de confiança em JSON.
+
+> Para este projeto, prefira o 5A: o Terraform cria também as permissões. O caminho abaixo serve para um repositório qualquer.
+
+1. Obtenha o `sub_claim_prefix` do repositório (passo 2).
+2. **IAM → Funções → Criar função → Política de confiança personalizada** (*Custom trust policy*) e cole:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::<CONTA>:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:sub": "repo:<dono>@<id-do-dono>/<repositorio>@<id-do-repositorio>:ref:refs/heads/main"
+      }
+    }
+  }]
+}
+```
+
+3. Ajuste o final do `sub` conforme o job do workflow:
+
+| No workflow | Final do `sub` |
+|---|---|
+| Job com `environment: <nome>` | `:environment:<nome>` |
+| Sem `environment`, em push ou disparo manual | `:ref:refs/heads/<branch>` |
+| Sem `environment`, em pull request | `:pull_request` |
+
+4. Selecione apenas as permissões que o workflow usa (evite `AdministratorAccess`), dê um nome e crie.
+5. Cadastre o ARN da role no secret do repositório.
+
+O provedor `token.actions.githubusercontent.com` precisa existir na conta; ele é único e compartilhado entre repositórios. O workflow precisa de `permissions: id-token: write` e `contents: read`.
+
+**Role já existente:** use **Funções →** a role **→ Relações de confiança → Editar política de confiança**. Colar o JSON substitui a confiança atual: outro repositório que use a mesma role perde o acesso.
+
 ## Passo 6. Apontar o GitHub para a nova conta
 
 Os secrets guardam os ARNs das roles. Um repositório faz deploy em uma conta por vez.
